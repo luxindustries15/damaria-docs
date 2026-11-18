@@ -1,0 +1,6 @@
+{
+  "name": "ExamPress",
+  "description": "School examination submission, automated and manual printer dispatch, paper usage tracking, and print room administration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
