@@ -1,4 +1,5 @@
 import type { UsbHardwareInfo } from '../types';
+import { apiUrl } from './api';
 
 interface UsbEndpointLike {
   direction: 'in' | 'out';
@@ -275,7 +276,7 @@ export async function tryRawWebUsbPrint(
 
     let payloadBytes: Uint8Array;
     if (fileUrl) {
-      const res = await fetch(fileUrl);
+      const res = await fetch(apiUrl(fileUrl));
       const buf = await res.arrayBuffer();
       payloadBytes = new Uint8Array(buf);
     } else {
@@ -351,7 +352,7 @@ export async function printViaLocalBridge(params: {
   try {
     let fileBase64: string | null = null;
     if (params.fileUrl) {
-      const fileRes = await fetch(params.fileUrl);
+      const fileRes = await fetch(apiUrl(params.fileUrl));
       if (fileRes.ok) {
         const buf = await fileRes.arrayBuffer();
         const bytes = new Uint8Array(buf);

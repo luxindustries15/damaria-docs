@@ -4,12 +4,14 @@ import { Check, ChevronDown, ChevronUp, Copy, Globe, Link2 } from 'lucide-react'
 interface DomainSharePanelProps {
   publicDomain?: string;
   liveAppUrl?: string;
+  backendMode?: 'server' | 'browser';
   compact?: boolean;
 }
 
 export function DomainSharePanel({
   publicDomain = 'https://damariadocs.com',
   liveAppUrl,
+  backendMode = 'server',
   compact = false,
 }: DomainSharePanelProps) {
   const [copiedTarget, setCopiedTarget] = useState<'domain' | 'live' | 'host' | null>(null);
@@ -57,9 +59,11 @@ export function DomainSharePanel({
               <span className="text-xs font-mono text-sky-300 truncate">{publicDomain}</span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              {compact
-                ? 'Share this address with teachers and staff, or copy the direct live link while DNS is being connected.'
-                : 'Copy your branded Damaria Docs address or the live working link for immediate document uploads.'}
+              {backendMode === 'browser'
+                ? 'Running in browser storage mode (documents save directly on this device). Sync via GitHub to activate shared cloud storage across devices.'
+                : compact
+                  ? 'Share this address with teachers and staff, or copy the direct live link while DNS is being connected.'
+                  : 'Copy your branded Damaria Docs address or the live working link for immediate document uploads.'}
             </p>
           </div>
         </div>
@@ -130,8 +134,9 @@ export function DomainSharePanel({
               domain registrar (such as Cloudflare, Namecheap, or Squarespace Domains).
             </li>
             <li>
-              Deploy or share your app so it has a public Cloud Run host, then add a Custom Domain
-              Mapping in Google Cloud Run (or point a proxied CNAME / redirect in Cloudflare) to{' '}
+              In Netlify Site Configuration → Domain Management, add{' '}
+              <span className="font-mono text-white">damariadocs.com</span> as your custom domain
+              and point your DNS records to{' '}
               {activeHostname ? (
                 <button
                   type="button"
@@ -144,13 +149,13 @@ export function DomainSharePanel({
                   )}
                 </button>
               ) : (
-                <span className="font-mono text-white">your Cloud Run service URL</span>
+                <span className="font-mono text-white">your Netlify site host</span>
               )}
               .
             </li>
             <li>
-              Until DNS propagation finishes, anyone can upload PDF or Word files immediately using
-              the <span className="font-medium text-white">Copy Live Link</span> button above.
+              Until DNS propagation finishes, anyone can open the live URL immediately using the{' '}
+              <span className="font-medium text-white">Copy Live Link</span> button above.
             </li>
           </ol>
         </div>

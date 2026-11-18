@@ -25,6 +25,20 @@ import type {
   PrinterConnectionMode,
   PrinterDevice,
 } from '../types';
+import { apiUrl } from '../utils/api';
+import {
+  addOrUpdatePrinter,
+  deletePrinter,
+  deleteSubmission,
+  downloadBridgeScript,
+  downloadLogsCsv,
+  downloadOriginalSubmission,
+  recordPrint,
+  syncBridgeMachines,
+  updatePrinter,
+  verifyPrinter,
+  type BackendMode,
+} from '../utils/apiClient';
 import { calcSheetsPerCopy, formatBytes, formatDateTime, formatTimeAgo } from '../utils/format';
 import { renderPdfFromUrl } from '../utils/pdfRenderer';
 import {
@@ -35,6 +49,8 @@ import {
 } from '../utils/usbDetector';
 import { DomainSharePanel } from './DomainSharePanel';
 import { PrinterStatusLabel, SubmissionStatusLabel } from './StatusBadge';
+import colorPrinterImg from '../assets/images/printer_ecotank_color_1794773700020.jpg';
+import laserPrinterImg from '../assets/images/printer_enterprise_laser_1794773699477.jpg';
 
 export type AdminTab = 'documents' | 'printers' | 'logs';
 
@@ -42,6 +58,7 @@ interface AdminDashboardProps {
   activeTab: AdminTab;
   onChangeTab: (tab: AdminTab) => void;
   data: BootstrapPayload;
+  backendMode?: BackendMode;
   onRefresh: () => void;
   onTriggerPrint: (
     submission: ExamSubmission,
@@ -56,6 +73,7 @@ export function AdminDashboard({
   activeTab,
   onChangeTab,
   data,
+  backendMode,
   onRefresh,
   onTriggerPrint,
 }: AdminDashboardProps) {
@@ -111,7 +129,7 @@ export function AdminDashboard({
     if (selectedDoc.fileType === 'pdf' && selectedDoc.fileUrl) {
       let cancelled = false;
       setPdfLoading(true);
-      renderPdfFromUrl(selectedDoc.fileUrl)
+      renderPdfFromUrl(apiUrl(selectedDoc.fileUrl))
         .then((res) => {
           if (!cancelled) setPdfPages(res.pageImages);
         })
@@ -140,11 +158,7 @@ export function AdminDashboard({
     const res = await queryLocalBridge();
     setBridgeRunning(res.running);
     if (res.running && res.machines.length > 0) {
-      await fetch('/api/printers/sync-bridge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machines: res.machines }),
-      });
+      await syncBridgeMachines(res.machines);
       onRefresh();
     }
   }
@@ -245,9 +259,7 @@ export function AdminDashboard({
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch(`/api/submissions/${doc.id}`, { method: 'DELETE' });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Delete failed.');
+      await deleteSubmission(doc.id);
       if (selectedId === doc.id) setSelectedId('');
       setConfirmDeleteDocId(null);
       setFeedback({ type: 'ok', text: `Deleted "${doc.title}".` });
@@ -277,17 +289,11 @@ export function AdminDashboard({
         });
         if (!bridgeRes.ok) throw new Error(bridgeRes.message);
 
-        const res = await fetch(`/api/submissions/${selectedDoc.id}/print`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            printerId: activeMachine.id,
-            copies: editCopies,
-            bridgeAlreadySent: true,
-          }),
+        await recordPrint(selectedDoc.id, {
+          printerId: activeMachine.id,
+          copies: editCopies,
+          bridgeAlreadySent: true,
         });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed recording print.');
         setFeedback({ type: 'ok', text: bridgeRes.message });
         onRefresh();
         return;
@@ -295,16 +301,10 @@ export function AdminDashboard({
 
       // 2. Digital TCP/IPP machine
       if (activeMachine.connectionMode === 'digital') {
-        const res = await fetch(`/api/submissions/${selectedDoc.id}/print`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            printerId: activeMachine.id,
-            copies: editCopies,
-          }),
+        await recordPrint(selectedDoc.id, {
+          printerId: activeMachine.id,
+          copies: editCopies,
         });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Digital print failed.');
         setFeedback({
           type: 'ok',
           text: `Sent ${editCopies} copies directly to ${activeMachine.name} (Digital).`,
@@ -322,20 +322,14 @@ export function AdminDashboard({
           editCopies
         );
         if (rawAttempt.sentRaw) {
-          const res = await fetch(`/api/submissions/${selectedDoc.id}/print`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              printerId: activeMachine.id,
-              copies: editCopies,
-              bridgeAlreadySent: true,
-            }),
+          await recordPrint(selectedDoc.id, {
+            printerId: activeMachine.id,
+            copies: editCopies,
+            bridgeAlreadySent: true,
           });
-          if (res.ok) {
-            setFeedback({ type: 'ok', text: rawAttempt.note });
-            onRefresh();
-            return;
-          }
+          setFeedback({ type: 'ok', text: rawAttempt.note });
+          onRefresh();
+          return;
         }
       }
 
@@ -359,16 +353,10 @@ export function AdminDashboard({
     setBusy(true);
     setFeedback(null);
     try {
-      const res = await fetch(`/api/submissions/${selectedDoc.id}/print`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          printerId: activeMachine.id,
-          copies: editCopies,
-        }),
+      await recordPrint(selectedDoc.id, {
+        printerId: activeMachine.id,
+        copies: editCopies,
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Could not record print.');
       setAwaitingManualConfirmId(null);
       setFeedback({
         type: 'ok',
@@ -398,29 +386,22 @@ export function AdminDashboard({
         ? 'photocopier'
         : mDeviceType;
 
-      const res = await fetch('/api/printers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: detectedName,
-          deviceType: inferredType,
-          location: mLocation.trim() || 'USB Port',
-          connectionMode: 'manual',
-          endpoint: probe.usbInfo.portLabel || 'USB Port',
-          isColor: mIsColor,
-          traySheets: mSheets.trim() !== '' ? Number(mSheets) : null,
-          usbInfo: probe.usbInfo,
-          hardwareState: probe.hardwareState,
-          inkBlack: probe.inkBlack ?? null,
-          paperState: probe.paperState,
-        }),
+      const saved = await addOrUpdatePrinter({
+        name: detectedName,
+        deviceType: inferredType,
+        location: mLocation.trim() || 'USB Port',
+        connectionMode: 'manual',
+        endpoint: probe.usbInfo.portLabel || 'USB Port',
+        isColor: mIsColor,
+        traySheets: mSheets.trim() !== '' ? Number(mSheets) : null,
+        usbInfo: probe.usbInfo,
+        hardwareState: probe.hardwareState,
+        inkBlack: probe.inkBlack ?? null,
+        paperState: probe.paperState,
       });
-      if (res.ok) {
-        const saved = (await res.json()) as PrinterDevice;
-        setSelectedPrinterId(saved.id);
-        setShowConnectForm(false);
-        onRefresh();
-      }
+      setSelectedPrinterId(saved.id);
+      setShowConnectForm(false);
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -432,26 +413,20 @@ export function AdminDashboard({
     setBusy(true);
     try {
       const parsedSheets = mSheets.trim() !== '' ? Number(mSheets) : null;
-      const res = await fetch('/api/printers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: mName.trim(),
-          deviceType: mDeviceType,
-          location: mLocation.trim() || 'Print Room',
-          connectionMode: mMode,
-          endpoint: mEndpoint.trim(),
-          isColor: mIsColor,
-          traySheets: parsedSheets,
-        }),
+      await addOrUpdatePrinter({
+        name: mName.trim(),
+        deviceType: mDeviceType,
+        location: mLocation.trim() || 'Print Room',
+        connectionMode: mMode,
+        endpoint: mEndpoint.trim(),
+        isColor: mIsColor,
+        traySheets: parsedSheets,
       });
-      if (res.ok) {
-        setMName('');
-        setMSheets('');
-        setUsbMsg(null);
-        setShowConnectForm(false);
-        onRefresh();
-      }
+      setMName('');
+      setMSheets('');
+      setUsbMsg(null);
+      setShowConnectForm(false);
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -460,7 +435,7 @@ export function AdminDashboard({
   async function verifyMachine(id: string) {
     setBusy(true);
     try {
-      await fetch(`/api/printers/${id}/verify`, { method: 'POST' });
+      await verifyPrinter(id);
       onRefresh();
     } finally {
       setBusy(false);
@@ -470,11 +445,7 @@ export function AdminDashboard({
   async function updateMachine(id: string, patch: Record<string, unknown>) {
     setBusy(true);
     try {
-      await fetch(`/api/printers/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
+      await updatePrinter(id, patch);
       onRefresh();
     } finally {
       setBusy(false);
@@ -484,7 +455,7 @@ export function AdminDashboard({
   async function removeMachine(id: string) {
     setBusy(true);
     try {
-      await fetch(`/api/printers/${id}`, { method: 'DELETE' });
+      await deletePrinter(id);
       setConfirmRemovePrinterId(null);
       onRefresh();
     } finally {
@@ -551,7 +522,11 @@ export function AdminDashboard({
       </div>
 
       {/* Shareable Domain & Live Access Link */}
-      <DomainSharePanel publicDomain={data.publicDomain} liveAppUrl={data.liveAppUrl} />
+      <DomainSharePanel
+        publicDomain={data.publicDomain}
+        liveAppUrl={data.liveAppUrl}
+        backendMode={backendMode}
+      />
 
       {/* TAB 1: PRINT QUEUE (DOCUMENTS TO PRINT) */}
       {activeTab === 'documents' && (
@@ -912,13 +887,14 @@ export function AdminDashboard({
                       )}
 
                       {selectedDoc.fileUrl && (
-                        <a
-                          href={`/api/submissions/${selectedDoc.id}/download`}
+                        <button
+                          type="button"
+                          onClick={() => downloadOriginalSubmission(selectedDoc)}
                           className="px-4 py-2.5 rounded-xl text-xs font-medium bg-white/10 hover:bg-white/15 text-slate-200 transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
                         >
                           <Download className="w-4 h-4" />
                           Download Original
-                        </a>
+                        </button>
                       )}
                     </div>
                   </div>
@@ -977,7 +953,7 @@ export function AdminDashboard({
                   ) : selectedDoc.fileMime?.startsWith('image/') && selectedDoc.fileUrl ? (
                     <div className="p-6 flex justify-center bg-slate-900/80">
                       <img
-                        src={selectedDoc.fileUrl}
+                        src={apiUrl(selectedDoc.fileUrl)}
                         alt={selectedDoc.title}
                         referrerPolicy="no-referrer"
                         className="max-h-[380px] object-contain rounded shadow-lg bg-white"
@@ -1073,14 +1049,14 @@ export function AdminDashboard({
                 print PDF or Word files directly without browser popups.
               </p>
             </div>
-            <a
-              href="/api/bridge/script"
-              download="damaria-docs-bridge.mjs"
+            <button
+              type="button"
+              onClick={() => downloadBridgeScript()}
               className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5" />
               Download Local Bridge
-            </a>
+            </button>
           </div>
 
           {showConnectForm && (
@@ -1224,7 +1200,7 @@ export function AdminDashboard({
                   <div key={p.id} className="glass-panel rounded-2xl overflow-hidden flex flex-col">
                     <div className="relative h-36 bg-slate-900 border-b border-white/10">
                       <img
-                        src={p.imageUrl}
+                        src={p.isColor ? colorPrinterImg : laserPrinterImg}
                         alt={p.name}
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover opacity-80"
@@ -1489,13 +1465,14 @@ export function AdminDashboard({
                 <option value="machines">Machine Events</option>
               </select>
 
-              <a
-                href="/api/logs/export"
+              <button
+                type="button"
+                onClick={() => downloadLogsCsv()}
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 <Download className="w-3.5 h-3.5" />
                 Export CSV
-              </a>
+              </button>
             </div>
           </div>
 

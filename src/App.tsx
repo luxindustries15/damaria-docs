@@ -4,7 +4,14 @@ import { FileUp, Printer } from 'lucide-react';
 import { AdminDashboard, type AdminTab } from './components/AdminDashboard';
 import { PrintablePacket } from './components/PrintablePacket';
 import { TeacherPortal } from './components/TeacherPortal';
+import backdropImg from './assets/images/glass_ambient_backdrop_1794773699533.jpg';
 import type { BootstrapPayload, ExamSubmission } from './types';
+import {
+  loadBootstrap,
+  sendUsbEvent,
+  syncUsbDevices,
+  type BackendMode,
+} from './utils/apiClient';
 import {
   formatUsbDeviceName,
   getPairedUsbDevices,
@@ -13,6 +20,7 @@ import {
 
 export default function App() {
   const [data, setData] = useState<BootstrapPayload | null>(null);
+  const [backendMode, setBackendMode] = useState<BackendMode>('server');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [viewMode, setViewMode] = useState<'send' | 'admin'>('send');
@@ -25,10 +33,9 @@ export default function App() {
 
   const fetchBootstrap = useCallback(async () => {
     try {
-      const res = await fetch('/api/bootstrap');
-      if (!res.ok) throw new Error('Unable to connect to Damaria Docs server');
-      const json = (await res.json()) as BootstrapPayload;
-      setData(json);
+      const { payload, mode } = await loadBootstrap();
+      setData(payload);
+      setBackendMode(mode);
       setError('');
     } catch (err) {
       setError((err as Error).message);
@@ -50,46 +57,34 @@ export default function App() {
   useEffect(() => {
     getPairedUsbDevices().then(async (devices) => {
       if (devices.length === 0) return;
-      await fetch('/api/printers/usb-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pairedDevices: devices.map((d) => ({
-            vendorId: d.vendorId,
-            productId: d.productId,
-            name: formatUsbDeviceName(d),
-          })),
-        }),
-      });
+      await syncUsbDevices(
+        devices.map((d) => ({
+          vendorId: d.vendorId,
+          productId: d.productId,
+          name: formatUsbDeviceName(d),
+        }))
+      );
       fetchBootstrap();
     });
 
     const unsubscribe = subscribeUsbHotplug(
       async (device) => {
-        await fetch('/api/printers/usb-event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'connect',
-            vendorId: device.vendorId,
-            productId: device.productId,
-            productName: device.productName,
-            manufacturer: device.manufacturerName,
-          }),
+        await sendUsbEvent({
+          event: 'connect',
+          vendorId: device.vendorId,
+          productId: device.productId,
+          productName: device.productName,
+          manufacturer: device.manufacturerName,
         });
         fetchBootstrap();
       },
       async (device) => {
-        await fetch('/api/printers/usb-event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'disconnect',
-            vendorId: device.vendorId,
-            productId: device.productId,
-            productName: device.productName,
-            manufacturer: device.manufacturerName,
-          }),
+        await sendUsbEvent({
+          event: 'disconnect',
+          vendorId: device.vendorId,
+          productId: device.productId,
+          productName: device.productName,
+          manufacturer: device.manufacturerName,
         });
         fetchBootstrap();
       }
@@ -118,7 +113,7 @@ export default function App() {
       <div className="no-print relative min-h-screen text-slate-100 overflow-x-hidden">
         <div className="fixed inset-0 -z-10 pointer-events-none">
           <img
-            src="/src/assets/images/glass_ambient_backdrop_1794773699533.jpg"
+            src={backdropImg}
             alt=""
             referrerPolicy="no-referrer"
             className="w-full h-full object-cover opacity-55"
@@ -276,6 +271,7 @@ export default function App() {
                     submissions={data.submissions}
                     publicDomain={data.publicDomain}
                     liveAppUrl={data.liveAppUrl}
+                    backendMode={backendMode}
                     onSubmitted={fetchBootstrap}
                     onRefresh={fetchBootstrap}
                   />
@@ -292,6 +288,7 @@ export default function App() {
                     activeTab={adminTab}
                     onChangeTab={setAdminTab}
                     data={data}
+                    backendMode={backendMode}
                     onRefresh={fetchBootstrap}
                     onTriggerPrint={handleTriggerPrint}
                   />

@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ExamSubmission, PaperSize } from '../types';
+import { submitDocument, type BackendMode } from '../utils/apiClient';
 import { calcTotalSheets, formatBytes, formatTimeAgo } from '../utils/format';
 import { getPdfPageCountFromFile } from '../utils/pdfRenderer';
 import { DomainSharePanel } from './DomainSharePanel';
@@ -20,6 +21,7 @@ interface TeacherPortalProps {
   submissions: ExamSubmission[];
   publicDomain?: string;
   liveAppUrl?: string;
+  backendMode?: BackendMode;
   onSubmitted: () => void;
   onRefresh: () => void;
 }
@@ -30,6 +32,7 @@ export function TeacherPortal({
   submissions,
   publicDomain,
   liveAppUrl,
+  backendMode,
   onSubmitted,
   onRefresh,
 }: TeacherPortalProps) {
@@ -96,12 +99,7 @@ export function TeacherPortal({
       formData.append('notes', notes);
       formData.append('documentFile', selectedFile);
 
-      const res = await fetch('/api/submissions', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not send file.');
+      const data = await submitDocument(formData);
 
       setTitle('');
       setNotes('');
@@ -566,6 +564,7 @@ export function TeacherPortal({
         <DomainSharePanel
           publicDomain={publicDomain}
           liveAppUrl={liveAppUrl}
+          backendMode={backendMode}
           compact
         />
       </div>

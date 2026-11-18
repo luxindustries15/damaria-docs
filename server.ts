@@ -443,6 +443,35 @@ const upload = multer({
 
 async function startServer() {
   const app = express();
+
+  const extraOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const isAllowed =
+      !origin ||
+      origin === 'https://damariadocs.com' ||
+      origin === 'https://www.damariadocs.com' ||
+      /^https:\/\/[a-z0-9-]+\.netlify\.app$/i.test(origin) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ||
+      extraOrigins.includes(origin);
+
+    if (origin && isAllowed) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/uploads', express.static(UPLOAD_DIR));
 

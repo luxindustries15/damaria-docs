@@ -1,4 +1,5 @@
 import type { ExamSubmission } from '../types';
+import { apiUrl } from '../utils/api';
 
 interface PrintablePacketProps {
   submission: ExamSubmission | null;
@@ -39,7 +40,7 @@ export function PrintablePacket({
             <div className={`p-8 ${copyIdx < repeatCount - 1 ? 'print-page-break' : ''}`}>
               {isImage && submission.fileUrl ? (
                 <img
-                  src={submission.fileUrl}
+                  src={apiUrl(submission.fileUrl)}
                   alt={submission.title}
                   className="max-w-full h-auto mx-auto"
                 />

@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Single-Page Application fallback (Netlify Functions v2 handles /api/* via config.path)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
