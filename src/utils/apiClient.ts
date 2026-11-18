@@ -33,7 +33,7 @@ export function getBackendMode(): BackendMode {
   return currentMode;
 }
 
-async function fetchJsonWithTimeout(url: string, init?: RequestInit, timeoutMs = 4500) {
+async function fetchJsonWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
