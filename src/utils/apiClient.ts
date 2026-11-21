@@ -128,7 +128,7 @@ export async function deleteSubmission(id: string): Promise<void> {
 export async function recordPrint(
   id: string,
   payload: { printerId: string; copies?: number; bridgeAlreadySent?: boolean }
-): Promise<{ job: ExamSubmission; printer: PrinterDevice }> {
+): Promise<{ job: ExamSubmission; printer: PrinterDevice | null }> {
   if (currentMode === 'browser') {
     return browserRecordPrint(id, payload);
   }
@@ -137,7 +137,7 @@ export async function recordPrint(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    })) as { job: ExamSubmission; printer: PrinterDevice };
+    })) as { job: ExamSubmission; printer: PrinterDevice | null };
   } catch (err) {
     const msg = (err as Error).message;
     if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {

@@ -228,8 +228,19 @@ export async function sendIppPrintJob(
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    const arrBuf = await res.arrayBuffer();
+    const respBuf = Buffer.from(arrBuf);
     if (!res.ok) {
       return { ok: false, message: `IPP Print-Job rejected with HTTP ${res.status}.` };
+    }
+    if (respBuf.length >= 4) {
+      const ippStatus = respBuf.readUInt16BE(2);
+      if (ippStatus >= 0x0400) {
+        return {
+          ok: false,
+          message: `Printer rejected IPP job (status 0x${ippStatus.toString(16).padStart(4, '0')}). Use Browser Print instead.`,
+        };
+      }
     }
     return { ok: true, message: `Sent IPP Print-Job (${copies} copies) directly to photocopier/printer.` };
   } catch (err) {

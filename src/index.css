@@ -89,24 +89,200 @@
   background: rgba(148, 163, 184, 0.42);
 }
 
+/* Word / HTML Document Preview Paper Sheet (matches .print-doc-content WYSIWYG) */
+.doc-paper-sheet {
+  background: #ffffff;
+  color: #0f172a;
+  max-width: 720px;
+  min-height: 360px;
+  padding: 28px 34px;
+  border-radius: 6px;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 14.5px;
+  line-height: 1.58;
+  word-wrap: break-word;
+}
+.doc-paper-sheet h1,
+.doc-paper-sheet h2,
+.doc-paper-sheet h3,
+.doc-paper-sheet h4 {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  color: #020617;
+  margin: 0.9em 0 0.4em;
+  line-height: 1.25;
+}
+.doc-paper-sheet h1:first-child,
+.doc-paper-sheet h2:first-child,
+.doc-paper-sheet p:first-child {
+  margin-top: 0;
+}
+.doc-paper-sheet h1 { font-size: 21px; }
+.doc-paper-sheet h2 { font-size: 17px; }
+.doc-paper-sheet h3 { font-size: 15px; }
+.doc-paper-sheet h4 { font-size: 14px; }
+.doc-paper-sheet .doc-subtitle {
+  font-size: 15px;
+  color: #475569;
+  margin-top: -0.25em;
+  margin-bottom: 0.9em;
+}
+.doc-paper-sheet p {
+  margin: 0 0 0.65em;
+  min-height: 1em;
+}
+.doc-paper-sheet ul {
+  list-style: disc;
+  padding-left: 1.55em;
+  margin: 0 0 0.75em;
+}
+.doc-paper-sheet ol {
+  list-style: decimal;
+  padding-left: 1.55em;
+  margin: 0 0 0.75em;
+}
+.doc-paper-sheet li {
+  margin: 0.2em 0;
+}
+.doc-paper-sheet blockquote {
+  border-left: 3px solid #cbd5e1;
+  padding-left: 0.9em;
+  margin: 0.75em 0;
+  color: #334155;
+}
+.doc-paper-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85em 0;
+  font-size: 13.5px;
+}
+.doc-paper-sheet th,
+.doc-paper-sheet td {
+  border: 1px solid #94a3b8;
+  padding: 6px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.doc-paper-sheet th {
+  background: #f1f5f9;
+  font-weight: 700;
+}
+.doc-paper-sheet img {
+  max-width: 100%;
+  height: auto;
+  margin: 0.5em 0;
+}
+.doc-paper-sheet pre {
+  font-family: inherit;
+  white-space: pre-wrap;
+  margin: 0;
+}
+.doc-paper-sheet .doc-page-break {
+  border-top: 1px dashed #cbd5e1;
+  margin: 18px 0;
+  height: 0;
+}
+
 /* Print Stylesheet */
 @media print {
   @page {
-    margin: 12mm;
+    margin: 0 !important;
   }
   html, body {
     background: #ffffff !important;
     color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
   .no-print {
     display: none !important;
   }
   .print-only {
     display: block !important;
+    background: #ffffff !important;
+    color: #000000 !important;
   }
   .print-page-break {
     page-break-after: always;
     break-after: page;
+  }
+  .print-pdf-page {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 10mm;
+    box-sizing: border-box;
+  }
+  .print-pdf-page img {
+    display: block;
+    max-width: 100%;
+    max-height: 268mm;
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    object-fit: contain;
+  }
+  .print-margin-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 0 !important;
+  }
+  .print-margin-head {
+    display: table-header-group;
+  }
+  .print-margin-foot {
+    display: table-footer-group;
+  }
+  .print-margin-head td,
+  .print-margin-foot td {
+    height: 14mm;
+    padding: 0 !important;
+    border: 0 !important;
+  }
+  .print-margin-body {
+    padding: 0 16mm !important;
+    border: 0 !important;
+    vertical-align: top;
+  }
+  .print-doc-content {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11.5pt;
+    line-height: 1.55;
+    color: #000000;
+    word-wrap: break-word;
+  }
+  .print-doc-content h1,
+  .print-doc-content h2,
+  .print-doc-content h3,
+  .print-doc-content h4 {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 700;
+    margin: 0.9em 0 0.4em;
+    page-break-after: avoid;
+  }
+  .print-doc-content h1 { font-size: 18pt; }
+  .print-doc-content h2 { font-size: 14pt; }
+  .print-doc-content h3 { font-size: 12pt; }
+  .print-doc-content h4 { font-size: 11pt; }
+  .print-doc-content .doc-subtitle { font-size: 12pt; color: #334155; margin: -0.25em 0 0.8em; }
+  .print-doc-content p { margin: 0 0 0.65em; min-height: 1em; }
+  .print-doc-content ul { list-style: disc; padding-left: 1.5em; margin: 0 0 0.75em; }
+  .print-doc-content ol { list-style: decimal; padding-left: 1.5em; margin: 0 0 0.75em; }
+  .print-doc-content blockquote { border-left: 2pt solid #94a3b8; padding-left: 0.8em; margin: 0.7em 0; }
+  .print-doc-content table { width: 100%; border-collapse: collapse; margin: 0.75em 0; }
+  .print-doc-content th,
+  .print-doc-content td { border: 1px solid #334155; padding: 5px 8px; text-align: left; vertical-align: top; }
+  .print-doc-content img { max-width: 100%; height: auto; }
+  .print-doc-content pre { font-family: inherit; white-space: pre-wrap; margin: 0; }
+  .print-doc-content .doc-page-break {
+    page-break-after: always;
+    break-after: page;
+    height: 0;
+    margin: 0;
+    border: 0;
   }
 }
 

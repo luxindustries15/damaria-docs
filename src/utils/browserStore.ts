@@ -9,6 +9,8 @@ import type {
   UsbHardwareInfo,
 } from '../types';
 import { BRIDGE_SCRIPT_SOURCE } from './bridgeScript';
+import { isPlaceholderWordHtml } from './docParser';
+import { parseWordFileInBrowser } from './docxBrowser';
 import { calcSheetsPerCopy } from './format';
 
 const SCHEMA_VERSION = 4;
@@ -217,32 +219,6 @@ function extractFileKey(fileUrl: string | null): string | null {
   return null;
 }
 
-async function convertDocxInBrowser(arrayBuffer: ArrayBuffer): Promise<string | null> {
-  try {
-    const mod = (await import('mammoth/mammoth.browser.min.js')) as unknown as {
-      convertToHtml?: (input: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>;
-      default?: {
-        convertToHtml?: (input: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>;
-      };
-    };
-    const globalMammoth = (
-      window as unknown as {
-        mammoth?: {
-          convertToHtml?: (input: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>;
-        };
-      }
-    ).mammoth;
-
-    const convertToHtml =
-      mod?.convertToHtml || mod?.default?.convertToHtml || globalMammoth?.convertToHtml;
-    if (!convertToHtml) return null;
-    const res = await convertToHtml({ arrayBuffer });
-    return res.value || null;
-  } catch {
-    return null;
-  }
-}
-
 export async function browserHasLocalData(): Promise<boolean> {
   const store = await idbGetState();
   return store.submissions.length > 0 || store.printers.length > 0 || store.logs.length > 0;
@@ -250,16 +226,38 @@ export async function browserHasLocalData(): Promise<boolean> {
 
 export async function browserBootstrap(): Promise<BootstrapPayload> {
   const store = await idbGetState();
+  let updatedLegacy = false;
+
   const hydratedSubmissions = await Promise.all(
     store.submissions.map(async (sub) => {
       if (sub.fileUrl && sub.fileUrl.startsWith('idb://')) {
         const key = sub.fileUrl.slice('idb://'.length);
+        if (sub.fileType === 'word' && isPlaceholderWordHtml(sub.renderedHtml)) {
+          const rec = await idbGetFile(key);
+          if (rec) {
+            try {
+              const bytes = new Uint8Array(await rec.blob.arrayBuffer());
+              const parsed = await parseWordFileInBrowser(bytes, rec.fileName || sub.title);
+              if (parsed.html && !isPlaceholderWordHtml(parsed.html)) {
+                sub.renderedHtml = parsed.html;
+                sub.pageCount = Math.max(1, Math.min(300, parsed.pageCount || sub.pageCount || 1));
+                updatedLegacy = true;
+              }
+            } catch {
+              // ignore unparseable legacy record
+            }
+          }
+        }
         const blobUrl = await resolveFileUrl(key);
         return { ...sub, fileUrl: blobUrl };
       }
       return sub;
     })
   );
+
+  if (updatedLegacy) {
+    await idbSaveState(store);
+  }
 
   return {
     ...store,
@@ -311,16 +309,17 @@ export async function browserSubmitDocument(formData: FormData): Promise<ExamSub
   let renderedHtml = '';
   let estimatedPages = Number(formData.get('pageCount')) || 0;
 
-  if (lowerName.endsWith('.docx')) {
-    const ab = await file.arrayBuffer();
-    const html = await convertDocxInBrowser(ab);
-    renderedHtml = html || `<p>Word document <strong>${escapeHtml(fileName)}</strong> uploaded.</p>`;
-    const textOnly = renderedHtml.replace(/<[^>]+>/g, ' ').trim();
-    if (!estimatedPages) {
-      estimatedPages = Math.max(1, Math.ceil(textOnly.split(/\s+/).length / 350));
+  if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || fileType === 'word') {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const parsed = await parseWordFileInBrowser(bytes, fileName);
+      renderedHtml = parsed.html;
+      if (!estimatedPages) {
+        estimatedPages = parsed.pageCount;
+      }
+    } catch {
+      renderedHtml = `<p>Word document <strong>${escapeHtml(fileName)}</strong> uploaded.</p>`;
     }
-  } else if (lowerName.endsWith('.doc')) {
-    renderedHtml = `<p>Word (.doc) file <strong>${escapeHtml(fileName)}</strong> uploaded. Use Download Original to open in Word, or save as .docx/.pdf for direct browser printing.</p>`;
   } else if (lowerName.endsWith('.txt')) {
     const txt = await file.text();
     renderedHtml = `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(txt)}</pre>`;
@@ -392,18 +391,43 @@ export async function browserDeleteSubmission(id: string): Promise<void> {
 export async function browserRecordPrint(
   id: string,
   payload: { printerId: string; copies?: number; bridgeAlreadySent?: boolean }
-): Promise<{ job: ExamSubmission; printer: PrinterDevice }> {
+): Promise<{ job: ExamSubmission; printer: PrinterDevice | null }> {
   const store = await idbGetState();
   const job = store.submissions.find((s) => s.id === id);
   if (!job) throw new Error('Document not found.');
-  const printer = store.printers.find((p) => p.id === payload.printerId);
-  if (!printer) throw new Error('Connect a printer or photocopier first.');
-  if (printer.status === 'offline') {
-    throw new Error(`${printer.name} is offline (${printer.connectionMessage}).`);
-  }
 
   const printCopies = Math.max(1, Number(payload.copies || job.requestedCopies));
   const sheetsNeeded = printCopies * calcSheetsPerCopy(job.pageCount, job.duplex);
+
+  if (payload.printerId === 'browser-default') {
+    job.requestedCopies = printCopies;
+    job.printedCopies += printCopies;
+    job.sheetsConsumed += sheetsNeeded;
+    job.assignedPrinterId = 'browser-default';
+    job.printMode = 'manual';
+    job.status = 'printed';
+    job.completedAt = new Date().toISOString();
+
+    appendLog(store, {
+      actorName: 'Admin Print Desk',
+      action: 'PRINT_COMPLETED',
+      examTitle: job.title,
+      senderName: job.senderName,
+      printerName: 'This Device (Browser Print)',
+      printMode: 'manual',
+      copiesProduced: printCopies,
+      sheetsUsed: sheetsNeeded,
+      details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) via This Device.`,
+    });
+    await idbSaveState(store);
+    return { job, printer: null };
+  }
+
+  const printer = store.printers.find((p) => p.id === payload.printerId);
+  if (!printer) throw new Error('Select a valid printer or use This Device.');
+  if (printer.status === 'offline') {
+    throw new Error(`${printer.name} is offline (${printer.connectionMessage}).`);
+  }
 
   if (printer.traySheets !== null && printer.traySheets < sheetsNeeded) {
     throw new Error(

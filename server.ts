@@ -7,6 +7,11 @@ import multer from 'multer';
 import mammoth from 'mammoth';
 import { createServer as createViteServer } from 'vite';
 import { queryIppPrinter, sendIppPrintJob } from './src/utils/ipp.ts';
+import {
+  isPlaceholderWordHtml,
+  MAMMOTH_STYLE_MAP,
+  parseWordDocumentBytes,
+} from './src/utils/docParser.ts';
 import type {
   BootstrapPayload,
   DeviceType,
@@ -91,6 +96,39 @@ function appendLog(entry: Omit<HistoryLogEntry, 'id' | 'timestamp'>) {
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function parseWordBuffer(buf: Buffer, fileName: string) {
+  return parseWordDocumentBytes(new Uint8Array(buf), fileName, async (rawBytes) => {
+    const res = await mammoth.convertToHtml(
+      { buffer: Buffer.from(rawBytes) },
+      { styleMap: MAMMOTH_STYLE_MAP }
+    );
+    return res.value || null;
+  });
+}
+
+async function reparseLegacyWordSubmissions() {
+  let changed = false;
+  for (const sub of store.submissions) {
+    if (sub.fileType !== 'word' || !sub.fileUrl || !isPlaceholderWordHtml(sub.renderedHtml)) {
+      continue;
+    }
+    const localFile = path.join(UPLOAD_DIR, path.basename(sub.fileUrl));
+    if (!fs.existsSync(localFile)) continue;
+    try {
+      const buf = await fsp.readFile(localFile);
+      const parsed = await parseWordBuffer(buf, sub.fileName || sub.title);
+      if (parsed.html && !isPlaceholderWordHtml(parsed.html)) {
+        sub.renderedHtml = parsed.html;
+        sub.pageCount = Math.max(1, Math.min(300, parsed.pageCount || sub.pageCount || 1));
+        changed = true;
+      }
+    } catch {
+      // ignore unreadable legacy file
+    }
+  }
+  if (changed) persistStore();
 }
 
 interface ProbeSummary {
@@ -479,7 +517,8 @@ async function startServer() {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  app.get('/api/bootstrap', (_req, res) => {
+  app.get('/api/bootstrap', async (_req, res) => {
+    await reparseLegacyWordSubmissions();
     res.json({
       ...store,
       publicDomain: 'https://damariadocs.com',
@@ -526,19 +565,17 @@ async function startServer() {
       let renderedHtml = '';
       let estimatedPages = Number(body.pageCount) || 0;
 
-      if (lowerName.endsWith('.docx')) {
+      if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || fileType === 'word') {
         try {
-          const result = await mammoth.convertToHtml({ path: req.file.path });
-          renderedHtml = result.value || `<p>Word document ${escapeHtml(fileName)} ready.</p>`;
-          const textOnly = renderedHtml.replace(/<[^>]+>/g, ' ').trim();
+          const buf = await fsp.readFile(req.file.path);
+          const parsed = await parseWordBuffer(buf, fileName);
+          renderedHtml = parsed.html;
           if (!estimatedPages) {
-            estimatedPages = Math.max(1, Math.ceil(textOnly.split(/\s+/).length / 350));
+            estimatedPages = parsed.pageCount;
           }
         } catch {
           renderedHtml = `<p>Word document <strong>${escapeHtml(fileName)}</strong> uploaded.</p>`;
         }
-      } else if (lowerName.endsWith('.doc')) {
-        renderedHtml = `<p>Word (.doc) file <strong>${escapeHtml(fileName)}</strong> uploaded. Use Download Original to open in Word, or save as .docx/.pdf for direct browser printing.</p>`;
       } else if (lowerName.endsWith('.txt')) {
         const txt = await fsp.readFile(req.file.path, 'utf-8');
         renderedHtml = `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(txt)}</pre>`;
@@ -1020,7 +1057,7 @@ async function startServer() {
     res.json({ deleted: true });
   });
 
-  // Execute real print (Digital TCP/IPP OR record Manual / Bridge print)
+  // Execute real print (Digital TCP/IPP OR record Manual / Browser / Bridge print)
   app.post('/api/submissions/:id/print', async (req, res) => {
     const job = store.submissions.find((s) => s.id === req.params.id);
     if (!job) return res.status(404).json({ error: 'Document not found.' });
@@ -1031,17 +1068,41 @@ async function startServer() {
       bridgeAlreadySent?: boolean;
     };
 
+    const printCopies = Math.max(1, Number(copies || job.requestedCopies));
+    const sheetsPerCopy = calcSheetsPerCopy(job.pageCount, job.duplex);
+    const sheetsNeeded = printCopies * sheetsPerCopy;
+
+    if (printerId === 'browser-default') {
+      job.requestedCopies = printCopies;
+      job.printedCopies += printCopies;
+      job.sheetsConsumed += sheetsNeeded;
+      job.assignedPrinterId = 'browser-default';
+      job.printMode = 'manual';
+      job.status = 'printed';
+      job.completedAt = new Date().toISOString();
+
+      appendLog({
+        actorName: 'Admin Print Desk',
+        action: 'PRINT_COMPLETED',
+        examTitle: job.title,
+        senderName: job.senderName,
+        printerName: 'This Device (Browser Print)',
+        printMode: 'manual',
+        copiesProduced: printCopies,
+        sheetsUsed: sheetsNeeded,
+        details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) via This Device.`,
+      });
+      persistStore();
+      return res.json({ job, printer: null });
+    }
+
     const printer = store.printers.find((p) => p.id === printerId);
     if (!printer) {
-      return res.status(400).json({ error: 'Connect a printer or photocopier first.' });
+      return res.status(400).json({ error: 'Select a valid printer or use This Device.' });
     }
     if (printer.status === 'offline') {
       return res.status(400).json({ error: `${printer.name} is offline (${printer.connectionMessage}).` });
     }
-
-    const printCopies = Math.max(1, Number(copies || job.requestedCopies));
-    const sheetsPerCopy = calcSheetsPerCopy(job.pageCount, job.duplex);
-    const sheetsNeeded = printCopies * sheetsPerCopy;
 
     if (printer.traySheets !== null && printer.traySheets < sheetsNeeded) {
       return res.status(400).json({
@@ -1050,6 +1111,12 @@ async function startServer() {
     }
 
     if (printer.connectionMode === 'digital' && !bridgeAlreadySent) {
+      if (job.fileType === 'word') {
+        return res.status(400).json({
+          error: 'Network IPP/TCP printers only accept PDF or images directly. Print Word documents using Browser Print.',
+        });
+      }
+
       let fileBuffer: Buffer;
       const localFile = job.fileUrl ? path.join(UPLOAD_DIR, path.basename(job.fileUrl)) : '';
       if (localFile && fs.existsSync(localFile)) {

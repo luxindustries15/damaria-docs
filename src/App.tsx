@@ -5,6 +5,7 @@ import { AdminDashboard, type AdminTab } from './components/AdminDashboard';
 import { PrintablePacket } from './components/PrintablePacket';
 import { TeacherPortal } from './components/TeacherPortal';
 import backdropImg from './assets/images/glass_ambient_backdrop_1794773699533.jpg';
+import schoolLogo from './assets/images/damaria_school_logo_rounded.png';
 import type { BootstrapPayload, ExamSubmission } from './types';
 import {
   loadBootstrap,
@@ -25,6 +26,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [viewMode, setViewMode] = useState<'send' | 'admin'>('send');
   const [adminTab, setAdminTab] = useState<AdminTab>('documents');
+  const [logoFailed, setLogoFailed] = useState(false);
   const [printState, setPrintState] = useState<{
     submission: ExamSubmission;
     copies: number;
@@ -92,15 +94,46 @@ export default function App() {
     return unsubscribe;
   }, [fetchBootstrap]);
 
-  function handleTriggerPrint(
+  async function handleTriggerPrint(
     submission: ExamSubmission,
     copies: number,
     pdfPageImages: string[] = []
   ) {
     setPrintState({ submission, copies, pdfPageImages });
-    setTimeout(() => {
+
+    // Wait for React to render the .print-only container into the DOM
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    );
+
+    const printRoot = document.querySelector('.print-only');
+    if (printRoot) {
+      const imgs = Array.from(printRoot.querySelectorAll('img'));
+      await Promise.race([
+        Promise.all(
+          imgs.map(async (img) => {
+            if (!img.complete) {
+              await new Promise<void>((res) => {
+                img.addEventListener('load', () => res(), { once: true });
+                img.addEventListener('error', () => res(), { once: true });
+              });
+            }
+            if (typeof img.decode === 'function') {
+              await img.decode().catch(() => undefined);
+            }
+          })
+        ),
+        new Promise<void>((res) => setTimeout(res, 2500)),
+      ]);
+    }
+
+    const prevTitle = document.title;
+    document.title = ' ';
+    try {
       window.print();
-    }, 150);
+    } finally {
+      document.title = prevTitle;
+    }
   }
 
   function openAdminSection(tab: AdminTab) {
@@ -124,9 +157,24 @@ export default function App() {
         <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
           {/* 3-Zone Top Bar: [Brand Title] — [4 single-line nav links] — [1 primary action] */}
           <header className="glass-panel rounded-2xl px-6 py-3.5 flex items-center justify-between gap-8">
-            <span className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0">
-              Damaria Docs
-            </span>
+            <div className="flex items-center gap-2.5 shrink-0">
+              {logoFailed ? (
+                <div className="w-9 h-9 rounded-xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
+                  <Printer className="w-4 h-4" />
+                </div>
+              ) : (
+                <img
+                  src={schoolLogo}
+                  alt="Damaria Pre & Primary School logo"
+                  referrerPolicy="no-referrer"
+                  onError={() => setLogoFailed(true)}
+                  className="w-9 h-9 rounded-xl object-contain shrink-0"
+                />
+              )}
+              <span className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0">
+                Damaria Docs
+              </span>
+            </div>
 
             <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
               <button

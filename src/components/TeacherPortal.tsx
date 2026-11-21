@@ -11,10 +11,10 @@ import {
   X,
 } from 'lucide-react';
 import type { ExamSubmission, PaperSize } from '../types';
+import schoolLogo from '../assets/images/damaria_school_logo_rounded.png';
 import { submitDocument, type BackendMode } from '../utils/apiClient';
-import { calcTotalSheets, formatBytes, formatTimeAgo } from '../utils/format';
+import { formatBytes, formatTimeAgo } from '../utils/format';
 import { getPdfPageCountFromFile } from '../utils/pdfRenderer';
-import { DomainSharePanel } from './DomainSharePanel';
 import { SubmissionStatusLabel } from './StatusBadge';
 
 interface TeacherPortalProps {
@@ -26,24 +26,19 @@ interface TeacherPortalProps {
   onRefresh: () => void;
 }
 
-const COPY_PRESETS = [1, 10, 30, 50, 100];
-
 export function TeacherPortal({
   submissions,
-  publicDomain,
-  liveAppUrl,
-  backendMode,
   onSubmitted,
   onRefresh,
 }: TeacherPortalProps) {
   const [senderName, setSenderName] = useState('');
   const [title, setTitle] = useState('');
-  const [requestedCopies, setRequestedCopies] = useState(30);
-  const [pageCount, setPageCount] = useState(1);
-  const [paperSize, setPaperSize] = useState<PaperSize>('A4');
-  const [duplex, setDuplex] = useState(true);
-  const [colorMode, setColorMode] = useState<'bw' | 'color'>('bw');
-  const [staple, setStaple] = useState(true);
+  const [requestedCopies, setRequestedCopies] = useState('');
+  const [detectedPageCount, setDetectedPageCount] = useState<number | null>(null);
+  const [paperSize, setPaperSize] = useState<PaperSize | ''>('');
+  const [duplex, setDuplex] = useState<boolean | null>(null);
+  const [colorMode, setColorMode] = useState<'bw' | 'color' | null>(null);
+  const [staple, setStaple] = useState(false);
   const [notes, setNotes] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -53,16 +48,18 @@ export function TeacherPortal({
   // Queue filter state
   const [queueSearch, setQueueSearch] = useState('');
   const [onlyMine, setOnlyMine] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
 
   async function handleFilePicked(file: File | null) {
     setSelectedFile(file);
+    setDetectedPageCount(null);
     setFeedback(null);
     if (file && !title.trim()) {
       setTitle(file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
     }
     if (file && file.name.toLowerCase().endsWith('.pdf')) {
       const detectedPages = await getPdfPageCountFromFile(file);
-      if (detectedPages) setPageCount(detectedPages);
+      if (detectedPages) setDetectedPageCount(detectedPages);
     }
   }
 
@@ -83,6 +80,23 @@ export function TeacherPortal({
       setFeedback({ type: 'err', text: 'Please choose a PDF or Word file to send.' });
       return;
     }
+    const copiesNum = Number(requestedCopies);
+    if (!requestedCopies.trim() || !Number.isFinite(copiesNum) || copiesNum < 1) {
+      setFeedback({ type: 'err', text: 'Please enter the number of copies needed.' });
+      return;
+    }
+    if (!paperSize) {
+      setFeedback({ type: 'err', text: 'Please select a paper size.' });
+      return;
+    }
+    if (duplex === null) {
+      setFeedback({ type: 'err', text: 'Please select print sides.' });
+      return;
+    }
+    if (colorMode === null) {
+      setFeedback({ type: 'err', text: 'Please select an ink mode.' });
+      return;
+    }
 
     setSubmitting(true);
     setFeedback(null);
@@ -90,8 +104,10 @@ export function TeacherPortal({
       const formData = new FormData();
       formData.append('senderName', senderName.trim());
       formData.append('title', title.trim());
-      formData.append('requestedCopies', String(requestedCopies));
-      formData.append('pageCount', String(pageCount));
+      formData.append('requestedCopies', String(Math.floor(copiesNum)));
+      if (detectedPageCount) {
+        formData.append('pageCount', String(detectedPageCount));
+      }
       formData.append('paperSize', paperSize);
       formData.append('duplex', String(duplex));
       formData.append('colorMode', colorMode);
@@ -104,7 +120,12 @@ export function TeacherPortal({
       setTitle('');
       setNotes('');
       setSelectedFile(null);
-      setPageCount(1);
+      setDetectedPageCount(null);
+      setRequestedCopies('');
+      setPaperSize('');
+      setDuplex(null);
+      setColorMode(null);
+      setStaple(false);
       setFeedback({
         type: 'ok',
         text: `Sent "${data.title}" (${data.requestedCopies} copies) to the Damaria Docs Print Desk.`,
@@ -136,8 +157,6 @@ export function TeacherPortal({
     });
   }, [submissions, onlyMine, senderName, queueSearch]);
 
-  const estSheets = calcTotalSheets(pageCount, requestedCopies, duplex);
-
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Left: Send PDF / Word Document Form */}
@@ -145,14 +164,29 @@ export function TeacherPortal({
         onSubmit={handleSubmit}
         className="lg:col-span-7 glass-panel rounded-2xl p-6 sm:p-7 space-y-6"
       >
-        <div className="border-b border-white/10 pb-4">
-          <h1 className="text-2xl font-bold tracking-tight text-white text-balance">
-            Send a Document for Printing
-          </h1>
-          <p className="text-sm text-slate-300 mt-1">
-            Attach a PDF or Word file, set your required copies, and send it straight to the Print
-            Desk.
-          </p>
+        <div className="border-b border-white/10 pb-4 flex items-center gap-4">
+          {logoFailed ? (
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
+              <FileText className="w-7 h-7" />
+            </div>
+          ) : (
+            <img
+              src={schoolLogo}
+              alt="Damaria Pre & Primary School — Education For Caring and Compassionate"
+              referrerPolicy="no-referrer"
+              onError={() => setLogoFailed(true)}
+              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-contain shrink-0"
+            />
+          )}
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-white text-balance">
+              Send a Document for Printing
+            </h1>
+            <p className="text-sm text-slate-300 mt-1">
+              Attach a PDF or Word file, set your required copies, and send it straight to the Print
+              Desk.
+            </p>
+          </div>
         </div>
 
         {/* Sender & Title */}
@@ -167,7 +201,7 @@ export function TeacherPortal({
               required
               value={senderName}
               onChange={(e) => setSenderName(e.target.value)}
-              placeholder="e.g. Sarah Jenkins"
+              placeholder="Enter your name"
               className="glass-input w-full rounded-xl px-4 py-2.5 text-sm"
             />
           </div>
@@ -181,7 +215,7 @@ export function TeacherPortal({
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Auto-filled from file name"
+              placeholder="Document title"
               className="glass-input w-full rounded-xl px-4 py-2.5 text-sm"
             />
           </div>
@@ -198,7 +232,7 @@ export function TeacherPortal({
                 type="button"
                 onClick={() => {
                   setSelectedFile(null);
-                  setPageCount(1);
+                  setDetectedPageCount(null);
                 }}
                 className="text-xs text-slate-400 hover:text-white inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
               >
@@ -243,9 +277,7 @@ export function TeacherPortal({
                   {selectedFile.name}
                 </p>
                 <p className="text-xs text-slate-300 mt-1 font-mono tabular-nums">
-                  {formatBytes(selectedFile.size)}
-                  {pageCount > 1 ? ` · ${pageCount} pages detected` : ''}
-                  {' · '}Click to replace
+                  {formatBytes(selectedFile.size)} · Click to replace
                 </p>
               </>
             ) : (
@@ -267,36 +299,22 @@ export function TeacherPortal({
           </label>
         </div>
 
-        {/* Copies & Quick Presets */}
-        <div className="space-y-2.5 border-t border-white/10 pt-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <label htmlFor="copies-input" className="text-xs font-medium text-slate-300">
+        {/* Copies & Paper Size */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-white/10 pt-5">
+          <div>
+            <label htmlFor="copies-input" className="block text-xs font-medium text-slate-300 mb-1.5">
               Number of Copies Needed
             </label>
-            <div className="flex items-center gap-1">
-              {COPY_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setRequestedCopies(preset)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-mono tabular-nums transition-colors whitespace-nowrap shrink-0 ${
-                    requestedCopies === preset
-                      ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50'
-                      : 'bg-white/[0.05] text-slate-400 hover:text-white border border-white/10'
-                  }`}
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-end">
-            <div className="sm:col-span-5 flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 aria-label="Decrease copies"
-                onClick={() => setRequestedCopies((c) => Math.max(1, c - 5))}
+                onClick={() =>
+                  setRequestedCopies((c) => {
+                    const n = Number(c) || 1;
+                    return String(Math.max(1, n - 1));
+                  })
+                }
                 className="p-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-slate-200 transition-colors"
               >
                 <Minus className="w-4 h-4" />
@@ -307,49 +325,43 @@ export function TeacherPortal({
                 min={1}
                 max={5000}
                 value={requestedCopies}
-                onChange={(e) => setRequestedCopies(Math.max(1, Number(e.target.value)))}
+                onChange={(e) => setRequestedCopies(e.target.value)}
+                placeholder="Copies"
                 className="glass-input w-full rounded-xl px-3 py-2.5 text-center text-sm font-mono font-semibold tabular-nums"
               />
               <button
                 type="button"
                 aria-label="Increase copies"
-                onClick={() => setRequestedCopies((c) => c + 5)}
+                onClick={() =>
+                  setRequestedCopies((c) => {
+                    const n = Number(c) || 0;
+                    return String(Math.min(5000, n + 1));
+                  })
+                }
                 className="p-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-slate-200 transition-colors"
               >
                 <Plus className="w-4 h-4" />
               </button>
             </div>
+          </div>
 
-            <div className="sm:col-span-3">
-              <label htmlFor="page-count" className="block text-xs text-slate-400 mb-1">
-                Pages in File
-              </label>
-              <input
-                id="page-count"
-                type="number"
-                min={1}
-                max={300}
-                value={pageCount}
-                onChange={(e) => setPageCount(Math.max(1, Number(e.target.value)))}
-                className="glass-input w-full rounded-xl px-3 py-2.5 text-xs font-mono tabular-nums"
-              />
-            </div>
-
-            <div className="sm:col-span-4">
-              <label htmlFor="paper-size" className="block text-xs text-slate-400 mb-1">
-                Paper Size
-              </label>
-              <select
-                id="paper-size"
-                value={paperSize}
-                onChange={(e) => setPaperSize(e.target.value as PaperSize)}
-                className="glass-input w-full rounded-xl px-3 py-2.5 text-xs"
-              >
-                <option value="A4">A4 (Standard)</option>
-                <option value="Letter">Letter</option>
-                <option value="Legal">Legal</option>
-              </select>
-            </div>
+          <div>
+            <label htmlFor="paper-size" className="block text-xs font-medium text-slate-300 mb-1.5">
+              Paper Size
+            </label>
+            <select
+              id="paper-size"
+              value={paperSize}
+              onChange={(e) => setPaperSize(e.target.value as PaperSize | '')}
+              className="glass-input w-full rounded-xl px-3.5 py-2.5 text-sm"
+            >
+              <option value="" disabled>
+                Select paper size
+              </option>
+              <option value="A4">A4</option>
+              <option value="Letter">Letter</option>
+              <option value="Legal">Legal</option>
+            </select>
           </div>
         </div>
 
@@ -362,7 +374,7 @@ export function TeacherPortal({
                 type="button"
                 onClick={() => setDuplex(true)}
                 className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                  duplex
+                  duplex === true
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
                 }`}
@@ -373,7 +385,7 @@ export function TeacherPortal({
                 type="button"
                 onClick={() => setDuplex(false)}
                 className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                  !duplex
+                  duplex === false
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
                 }`}
@@ -429,7 +441,7 @@ export function TeacherPortal({
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Optional note for the Print Desk (e.g. Needed by 9:00 AM)"
+              placeholder="Optional note for the Print Desk"
               className="glass-input w-full rounded-xl px-4 py-2.5 text-sm"
             />
           </div>
@@ -448,18 +460,7 @@ export function TeacherPortal({
           </div>
         )}
 
-        <div className="border-t border-white/10 pt-5 flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-0.5">
-            <p className="text-xs text-slate-400">Estimated Paper Required</p>
-            <p className="text-sm font-mono font-semibold text-white tabular-nums">
-              {estSheets.toLocaleString()} {paperSize} sheets
-              <span className="text-slate-400 font-normal">
-                {' '}
-                ({pageCount}p × {requestedCopies} copies, {duplex ? '2-sided' : '1-sided'})
-              </span>
-            </p>
-          </div>
-
+        <div className="border-t border-white/10 pt-5 flex justify-end">
           <button
             type="submit"
             disabled={submitting}
@@ -560,13 +561,6 @@ export function TeacherPortal({
           </div>
         )}
         </div>
-
-        <DomainSharePanel
-          publicDomain={publicDomain}
-          liveAppUrl={liveAppUrl}
-          backendMode={backendMode}
-          compact
-        />
       </div>
     </div>
   );
