@@ -19,6 +19,7 @@ import {
   parseWordDocumentBytes,
 } from '../../src/utils/docParser';
 import type {
+  AppNotification,
   BootstrapPayload,
   DeviceType,
   ExamSubmission,
@@ -66,6 +67,7 @@ function createEmptyStore(): BootstrapPayload {
     printers: [],
     submissions: [],
     logs: [],
+    notifications: [],
   };
 }
 
@@ -158,6 +160,7 @@ async function loadStore(): Promise<BootstrapPayload> {
     try {
       const parsed = (await blobs.get('store.json', { type: 'json' })) as BootstrapPayload | null;
       if (parsed && parsed.schemaVersion === SCHEMA_VERSION) {
+        if (!Array.isArray(parsed.notifications)) parsed.notifications = [];
         return parsed;
       }
     } catch {
@@ -170,6 +173,7 @@ async function loadStore(): Promise<BootstrapPayload> {
       const raw = await fsp.readFile(TMP_STORE_PATH, 'utf-8');
       const parsed = JSON.parse(raw) as BootstrapPayload;
       if (parsed.schemaVersion === SCHEMA_VERSION) {
+        if (!Array.isArray(parsed.notifications)) parsed.notifications = [];
         return parsed;
       }
     }
@@ -273,6 +277,23 @@ function appendLog(store: BootstrapPayload, entry: Omit<HistoryLogEntry, 'id' | 
   };
   store.logs.unshift(full);
   if (store.logs.length > 500) store.logs.length = 500;
+  return full;
+}
+
+function appendNotification(
+  store: BootstrapPayload,
+  entry: Omit<AppNotification, 'id' | 'timestamp'>
+) {
+  if (!Array.isArray(store.notifications)) {
+    store.notifications = [];
+  }
+  const full: AppNotification = {
+    id: uid('ntf'),
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  store.notifications.unshift(full);
+  if (store.notifications.length > 120) store.notifications.length = 120;
   return full;
 }
 
@@ -833,6 +854,14 @@ export default async function handler(req: Request): Promise<Response> {
         senderName,
         details: `Sent ${fileName} (${requestedCopies} copies, ${pageCount}p, ${paperSize}).`,
       });
+      appendNotification(store, {
+        type: 'DOCUMENT_SENT',
+        audience: 'all',
+        title: 'Document Sent',
+        message: `${senderName} sent "${title}" (${requestedCopies} ${requestedCopies === 1 ? 'copy' : 'copies'}, ${paperSize}).`,
+        submissionId: submission.id,
+        senderName,
+      });
       await saveStore(store);
       return jsonResponse(submission, 201);
     } catch (err) {
@@ -885,10 +914,12 @@ export default async function handler(req: Request): Promise<Response> {
     const sheetsNeeded = printCopies * sheetsPerCopy;
 
     if (body.printerId === 'browser-default') {
+      const printerLabel = 'This Device (Browser Print)';
       job.requestedCopies = printCopies;
       job.printedCopies += printCopies;
       job.sheetsConsumed += sheetsNeeded;
       job.assignedPrinterId = 'browser-default';
+      job.assignedPrinterName = printerLabel;
       job.printMode = 'manual';
       job.status = 'printed';
       job.completedAt = new Date().toISOString();
@@ -898,11 +929,20 @@ export default async function handler(req: Request): Promise<Response> {
         action: 'PRINT_COMPLETED',
         examTitle: job.title,
         senderName: job.senderName,
-        printerName: 'This Device (Browser Print)',
+        printerName: printerLabel,
         printMode: 'manual',
         copiesProduced: printCopies,
         sheetsUsed: sheetsNeeded,
         details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) via This Device.`,
+      });
+      appendNotification(store, {
+        type: 'PRINT_COMPLETED',
+        audience: 'all',
+        title: 'Printing Completed',
+        message: `"${job.title}" for ${job.senderName} is done (${printCopies} ${printCopies === 1 ? 'copy' : 'copies'}, ${sheetsNeeded} sheets).`,
+        submissionId: job.id,
+        senderName: job.senderName,
+        printerName: printerLabel,
       });
       await saveStore(store);
       return jsonResponse({ job, printer: null });
@@ -977,6 +1017,15 @@ export default async function handler(req: Request): Promise<Response> {
           printMode: 'digital',
           details: tx.message,
         });
+        appendNotification(store, {
+          type: 'PRINT_FAILED',
+          audience: 'all',
+          title: 'Print Failed',
+          message: `Printing "${job.title}" failed on ${printer.name}: ${tx.message}`,
+          submissionId: job.id,
+          senderName: job.senderName,
+          printerName: printer.name,
+        });
         await saveStore(store);
         return jsonResponse({ error: tx.message }, 502);
       }
@@ -996,6 +1045,7 @@ export default async function handler(req: Request): Promise<Response> {
     job.printedCopies += printCopies;
     job.sheetsConsumed += sheetsNeeded;
     job.assignedPrinterId = printer.id;
+    job.assignedPrinterName = printer.name;
     job.printMode = printer.connectionMode;
     job.status = 'printed';
     job.completedAt = new Date().toISOString();
@@ -1010,6 +1060,15 @@ export default async function handler(req: Request): Promise<Response> {
       copiesProduced: printCopies,
       sheetsUsed: sheetsNeeded,
       details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) on ${printer.name}.`,
+    });
+    appendNotification(store, {
+      type: 'PRINT_COMPLETED',
+      audience: 'all',
+      title: 'Printing Completed',
+      message: `"${job.title}" for ${job.senderName} is done (${printCopies} ${printCopies === 1 ? 'copy' : 'copies'} on ${printer.name}).`,
+      submissionId: job.id,
+      senderName: job.senderName,
+      printerName: printer.name,
     });
     await saveStore(store);
     return jsonResponse({ job, printer });
@@ -1033,6 +1092,14 @@ export default async function handler(req: Request): Promise<Response> {
       examTitle: removed.title,
       senderName: removed.senderName,
       details: `Deleted "${removed.title}" (${removed.fileName || 'file'}).`,
+    });
+    appendNotification(store, {
+      type: 'DOCUMENT_DELETED',
+      audience: 'all',
+      title: 'Document Deleted',
+      message: `Removed "${removed.title}" sent by ${removed.senderName}.`,
+      submissionId: removed.id,
+      senderName: removed.senderName,
     });
     await saveStore(store);
     return jsonResponse({ deleted: true, id: removed.id });
@@ -1178,6 +1245,13 @@ export default async function handler(req: Request): Promise<Response> {
       printerName: printer.name,
       printMode: mode,
       details: `${printer.name} (${dType}): ${printer.connectionMessage}`,
+    });
+    appendNotification(store, {
+      type: printer.status === 'offline' ? 'PRINTER_OFFLINE' : 'PRINTER_CONNECTED',
+      audience: 'admin',
+      title: printer.status === 'offline' ? 'Machine Offline' : 'Machine Connected',
+      message: `${printer.name}: ${printer.connectionMessage}`,
+      printerName: printer.name,
     });
     await saveStore(store);
     return jsonResponse(printer, 201);
@@ -1422,6 +1496,13 @@ export default async function handler(req: Request): Promise<Response> {
         printerName: printer.name,
         details: `Updated ${printer.name} loaded paper tray to ${sheets} sheets.`,
       });
+      appendNotification(store, {
+        type: 'PAPER_UPDATED',
+        audience: 'admin',
+        title: 'Paper Tray Updated',
+        message: `${printer.name} tray updated to ${sheets} sheets.`,
+        printerName: printer.name,
+      });
     }
 
     await saveStore(store);
@@ -1441,8 +1522,63 @@ export default async function handler(req: Request): Promise<Response> {
       printerName: removed.name,
       details: `Removed ${removed.name}.`,
     });
+    appendNotification(store, {
+      type: 'PRINTER_REMOVED',
+      audience: 'admin',
+      title: 'Machine Removed',
+      message: `Removed ${removed.name} from Machines.`,
+      printerName: removed.name,
+    });
     await saveStore(store);
     return jsonResponse({ deleted: true });
+  }
+
+  // DELETE /api/logs/:id
+  const deleteLogMatch = routePath.match(/^\/logs\/([^/]+)$/);
+  if (req.method === 'DELETE' && deleteLogMatch) {
+    const id = decodeURIComponent(deleteLogMatch[1]);
+    const idx = store.logs.findIndex((l) => l.id === id);
+    if (idx === -1) return jsonResponse({ error: 'Log entry not found.' }, 404);
+    store.logs.splice(idx, 1);
+    appendNotification(store, {
+      type: 'LOGS_DELETED',
+      audience: 'admin',
+      title: 'History Log Deleted',
+      message: 'Removed 1 entry from Activity Logs.',
+    });
+    await saveStore(store);
+    return jsonResponse({ deleted: true, id });
+  }
+
+  // DELETE /api/logs
+  if (req.method === 'DELETE' && routePath === '/logs') {
+    let ids: string[] | null = null;
+    try {
+      const body = (await req.json()) as { ids?: unknown };
+      if (Array.isArray(body?.ids)) {
+        ids = body.ids.filter((x): x is string => typeof x === 'string');
+      }
+    } catch {
+      // empty body -> clear all
+    }
+    let deletedCount = 0;
+    if (ids && ids.length > 0) {
+      const idSet = new Set(ids);
+      const before = store.logs.length;
+      store.logs = store.logs.filter((l) => !idSet.has(l.id));
+      deletedCount = before - store.logs.length;
+    } else {
+      deletedCount = store.logs.length;
+      store.logs = [];
+    }
+    appendNotification(store, {
+      type: 'LOGS_DELETED',
+      audience: 'admin',
+      title: 'Activity Logs Cleared',
+      message: `Removed ${deletedCount} ${deletedCount === 1 ? 'entry' : 'entries'} from Activity Logs.`,
+    });
+    await saveStore(store);
+    return jsonResponse({ deletedCount, remaining: store.logs.length });
   }
 
   // GET /api/logs/export

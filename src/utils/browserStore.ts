@@ -1,4 +1,5 @@
 import type {
+  AppNotification,
   BootstrapPayload,
   DeviceType,
   ExamSubmission,
@@ -79,6 +80,7 @@ function createEmptyStore(): BootstrapPayload {
     printers: [],
     submissions: [],
     logs: [],
+    notifications: [],
   };
 }
 
@@ -90,6 +92,23 @@ function appendLog(store: BootstrapPayload, entry: Omit<HistoryLogEntry, 'id' | 
   };
   store.logs.unshift(full);
   if (store.logs.length > 500) store.logs.length = 500;
+  return full;
+}
+
+function appendNotification(
+  store: BootstrapPayload,
+  entry: Omit<AppNotification, 'id' | 'timestamp'>
+) {
+  if (!Array.isArray(store.notifications)) {
+    store.notifications = [];
+  }
+  const full: AppNotification = {
+    id: uid('ntf'),
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  store.notifications.unshift(full);
+  if (store.notifications.length > 120) store.notifications.length = 120;
   return full;
 }
 
@@ -126,6 +145,7 @@ async function idbGetState(): Promise<BootstrapPayload> {
         req.onerror = () => resolve(undefined);
       });
       if (result && result.schemaVersion === SCHEMA_VERSION) {
+        if (!Array.isArray(result.notifications)) result.notifications = [];
         return result;
       }
     } catch {
@@ -137,7 +157,10 @@ async function idbGetState(): Promise<BootstrapPayload> {
     const raw = localStorage.getItem(LS_FALLBACK_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as BootstrapPayload;
-      if (parsed.schemaVersion === SCHEMA_VERSION) return parsed;
+      if (parsed.schemaVersion === SCHEMA_VERSION) {
+        if (!Array.isArray(parsed.notifications)) parsed.notifications = [];
+        return parsed;
+      }
     }
   } catch {
     // ignore
@@ -269,6 +292,7 @@ export async function browserBootstrap(): Promise<BootstrapPayload> {
       schoolName: store.schoolName,
       printers: [],
       logs: [],
+      notifications: (store.notifications || []).filter((n) => n.audience !== 'admin'),
       submissions: store.submissions.map((sub) => ({
         ...sub,
         fileUrl: null,
@@ -418,6 +442,14 @@ export async function browserSubmitDocument(formData: FormData): Promise<ExamSub
     senderName,
     details: `Sent ${fileName} (${requestedCopies} copies, ${pageCount}p, ${paperSize}).`,
   });
+  appendNotification(store, {
+    type: 'DOCUMENT_SENT',
+    audience: 'all',
+    title: 'Document Sent',
+    message: `${senderName} sent "${title}" (${requestedCopies} ${requestedCopies === 1 ? 'copy' : 'copies'}, ${paperSize}).`,
+    submissionId: submissionToSave.id,
+    senderName,
+  });
   await idbSaveState(store);
 
   const blobUrl = await resolveFileUrl(fileKey);
@@ -440,6 +472,14 @@ export async function browserDeleteSubmission(id: string): Promise<void> {
     senderName: removed.senderName,
     details: `Deleted "${removed.title}" (${removed.fileName || 'file'}).`,
   });
+  appendNotification(store, {
+    type: 'DOCUMENT_DELETED',
+    audience: 'all',
+    title: 'Document Deleted',
+    message: `Removed "${removed.title}" sent by ${removed.senderName}.`,
+    submissionId: removed.id,
+    senderName: removed.senderName,
+  });
   await idbSaveState(store);
 }
 
@@ -456,10 +496,12 @@ export async function browserRecordPrint(
   const sheetsNeeded = printCopies * calcSheetsPerCopy(job.pageCount, job.duplex);
 
   if (payload.printerId === 'browser-default') {
+    const printerLabel = 'This Device (Browser Print)';
     job.requestedCopies = printCopies;
     job.printedCopies += printCopies;
     job.sheetsConsumed += sheetsNeeded;
     job.assignedPrinterId = 'browser-default';
+    job.assignedPrinterName = printerLabel;
     job.printMode = 'manual';
     job.status = 'printed';
     job.completedAt = new Date().toISOString();
@@ -469,11 +511,20 @@ export async function browserRecordPrint(
       action: 'PRINT_COMPLETED',
       examTitle: job.title,
       senderName: job.senderName,
-      printerName: 'This Device (Browser Print)',
+      printerName: printerLabel,
       printMode: 'manual',
       copiesProduced: printCopies,
       sheetsUsed: sheetsNeeded,
       details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) via This Device.`,
+    });
+    appendNotification(store, {
+      type: 'PRINT_COMPLETED',
+      audience: 'all',
+      title: 'Printing Completed',
+      message: `"${job.title}" for ${job.senderName} is done (${printCopies} ${printCopies === 1 ? 'copy' : 'copies'}, ${sheetsNeeded} sheets).`,
+      submissionId: job.id,
+      senderName: job.senderName,
+      printerName: printerLabel,
     });
     await idbSaveState(store);
     return { job, printer: null };
@@ -504,6 +555,7 @@ export async function browserRecordPrint(
   job.printedCopies += printCopies;
   job.sheetsConsumed += sheetsNeeded;
   job.assignedPrinterId = printer.id;
+  job.assignedPrinterName = printer.name;
   job.printMode = printer.connectionMode;
   job.status = 'printed';
   job.completedAt = new Date().toISOString();
@@ -518,6 +570,15 @@ export async function browserRecordPrint(
     copiesProduced: printCopies,
     sheetsUsed: sheetsNeeded,
     details: `Printed ${printCopies} copies (${sheetsNeeded} ${job.paperSize} sheets) on ${printer.name}.`,
+  });
+  appendNotification(store, {
+    type: 'PRINT_COMPLETED',
+    audience: 'all',
+    title: 'Printing Completed',
+    message: `"${job.title}" for ${job.senderName} is done (${printCopies} ${printCopies === 1 ? 'copy' : 'copies'} on ${printer.name}).`,
+    submissionId: job.id,
+    senderName: job.senderName,
+    printerName: printer.name,
   });
   await idbSaveState(store);
   return { job, printer };
@@ -632,6 +693,13 @@ export async function browserAddPrinter(body: AddPrinterBody): Promise<PrinterDe
     printMode: mode,
     details: `${printer.name} (${dType}): ${printer.connectionMessage}`,
   });
+  appendNotification(store, {
+    type: printer.status === 'offline' ? 'PRINTER_OFFLINE' : 'PRINTER_CONNECTED',
+    audience: 'admin',
+    title: printer.status === 'offline' ? 'Machine Offline' : 'Machine Connected',
+    message: `${printer.name}: ${printer.connectionMessage}`,
+    printerName: printer.name,
+  });
   await idbSaveState(store);
   return printer;
 }
@@ -690,6 +758,13 @@ export async function browserUpdatePrinter(
       printerName: printer.name,
       details: `Updated ${printer.name} loaded paper tray to ${sheets} sheets.`,
     });
+    appendNotification(store, {
+      type: 'PAPER_UPDATED',
+      audience: 'admin',
+      title: 'Paper Tray Updated',
+      message: `${printer.name} tray updated to ${sheets} sheets.`,
+      printerName: printer.name,
+    });
   }
 
   await idbSaveState(store);
@@ -708,7 +783,52 @@ export async function browserDeletePrinter(id: string): Promise<void> {
     printerName: removed.name,
     details: `Removed ${removed.name}.`,
   });
+  appendNotification(store, {
+    type: 'PRINTER_REMOVED',
+    audience: 'admin',
+    title: 'Machine Removed',
+    message: `Removed ${removed.name} from Machines.`,
+    printerName: removed.name,
+  });
   await idbSaveState(store);
+}
+
+export async function browserDeleteLog(id: string): Promise<void> {
+  requireBrowserAdmin();
+  const store = await idbGetState();
+  const idx = store.logs.findIndex((l) => l.id === id);
+  if (idx === -1) throw new Error('Log entry not found.');
+  store.logs.splice(idx, 1);
+  appendNotification(store, {
+    type: 'LOGS_DELETED',
+    audience: 'admin',
+    title: 'History Log Deleted',
+    message: 'Removed 1 entry from Activity Logs.',
+  });
+  await idbSaveState(store);
+}
+
+export async function browserClearLogs(ids?: string[]): Promise<{ deletedCount: number }> {
+  requireBrowserAdmin();
+  const store = await idbGetState();
+  let deletedCount = 0;
+  if (Array.isArray(ids) && ids.length > 0) {
+    const idSet = new Set(ids);
+    const before = store.logs.length;
+    store.logs = store.logs.filter((l) => !idSet.has(l.id));
+    deletedCount = before - store.logs.length;
+  } else {
+    deletedCount = store.logs.length;
+    store.logs = [];
+  }
+  appendNotification(store, {
+    type: 'LOGS_DELETED',
+    audience: 'admin',
+    title: 'Activity Logs Cleared',
+    message: `Removed ${deletedCount} ${deletedCount === 1 ? 'entry' : 'entries'} from Activity Logs.`,
+  });
+  await idbSaveState(store);
+  return { deletedCount };
 }
 
 export async function browserSyncUsbDevices(

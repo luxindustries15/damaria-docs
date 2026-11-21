@@ -70,24 +70,27 @@ export interface ExamSubmission {
   notes: string;
   status: SubmissionStatus;
   assignedPrinterId: string | null;
+  assignedPrinterName?: string | null;
   printMode: PrinterConnectionMode | null;
   submittedAt: string;
   completedAt: string | null;
 }
 
+export type HistoryLogAction =
+  | 'DOCUMENT_SENT'
+  | 'DOCUMENT_DELETED'
+  | 'PRINT_COMPLETED'
+  | 'PRINT_FAILED'
+  | 'PRINTER_CONNECTED'
+  | 'PRINTER_OFFLINE'
+  | 'PRINTER_REMOVED'
+  | 'PAPER_UPDATED';
+
 export interface HistoryLogEntry {
   id: string;
   timestamp: string;
   actorName: string;
-  action:
-    | 'DOCUMENT_SENT'
-    | 'DOCUMENT_DELETED'
-    | 'PRINT_COMPLETED'
-    | 'PRINT_FAILED'
-    | 'PRINTER_CONNECTED'
-    | 'PRINTER_OFFLINE'
-    | 'PRINTER_REMOVED'
-    | 'PAPER_UPDATED';
+  action: HistoryLogAction;
   examTitle?: string;
   senderName?: string;
   printerName?: string;
@@ -95,6 +98,20 @@ export interface HistoryLogEntry {
   copiesProduced?: number;
   sheetsUsed?: number;
   details: string;
+}
+
+export type NotificationType = HistoryLogAction | 'LOGS_DELETED';
+
+export interface AppNotification {
+  id: string;
+  timestamp: string;
+  type: NotificationType;
+  audience: 'all' | 'sender' | 'admin';
+  title: string;
+  message: string;
+  submissionId?: string;
+  senderName?: string;
+  printerName?: string;
 }
 
 export interface BootstrapPayload {
@@ -105,4 +122,5 @@ export interface BootstrapPayload {
   printers: PrinterDevice[];
   submissions: ExamSubmission[];
   logs: HistoryLogEntry[];
+  notifications?: AppNotification[];
 }

@@ -26,6 +26,8 @@ import type {
 import { apiUrl } from '../utils/api';
 import {
   addOrUpdatePrinter,
+  clearHistoryLogs,
+  deleteHistoryLog,
   deletePrinter,
   deleteSubmission,
   downloadBridgeScript,
@@ -117,9 +119,12 @@ export function AdminDashboard({
   // Bridge status (quiet optional sync)
   const [bridgeRunning, setBridgeRunning] = useState(false);
 
-  // History Logs Filters
+  // History Logs Filters & Admin Deletion
   const [logSearch, setLogSearch] = useState('');
   const [logActionFilter, setLogActionFilter] = useState<string>('all');
+  const [confirmDeleteLogId, setConfirmDeleteLogId] = useState<string | null>(null);
+  const [confirmClearLogs, setConfirmClearLogs] = useState(false);
+  const [logFeedback, setLogFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const selectedDoc = useMemo(
     () => data.submissions.find((s) => s.id === selectedId) || data.submissions[0] || null,
@@ -375,6 +380,26 @@ export function AdminDashboard({
     }
   }
 
+  async function recordCompletedPrint(doc: ExamSubmission, copies: number) {
+    const printerId = activeMachine && machineIsReady ? activeMachine.id : BROWSER_PRINTER_ID;
+    const printerLabel = activeMachine && machineIsReady ? activeMachine.name : 'This Device';
+    try {
+      await recordPrint(doc.id, { printerId, copies });
+      setAwaitingManualConfirmId(null);
+      setFeedback({
+        type: 'ok',
+        text: `Printed and recorded "${doc.title}" (${copies} ${copies === 1 ? 'copy' : 'copies'} on ${printerLabel}).`,
+      });
+      onRefresh();
+    } catch (err) {
+      setAwaitingManualConfirmId(doc.id);
+      setFeedback({
+        type: 'err',
+        text: `Print dialog closed, but recording failed: ${(err as Error).message}. Click "Mark Printed" to retry.`,
+      });
+    }
+  }
+
   async function printWithBrowserDialog(doc: ExamSubmission, copies: number) {
     // If a PDF didn't render to canvas images, try rendering once more or print via authenticated blob iframe
     let pagesToPrint = pdfPages;
@@ -412,11 +437,7 @@ export function AdminDashboard({
             iframe.remove();
             URL.revokeObjectURL(blobUrl);
           }, 60_000);
-          setAwaitingManualConfirmId(doc.id);
-          setFeedback({
-            type: 'ok',
-            text: `Opened browser print dialog for "${doc.title}". Click "Mark Printed" once printing completes.`,
-          });
+          await recordCompletedPrint(doc, copies);
           return;
         } catch {
           iframe.remove();
@@ -438,18 +459,7 @@ export function AdminDashboard({
     }
 
     await onTriggerPrint(resolvedDoc, copies, pagesToPrint);
-    setAwaitingManualConfirmId(doc.id);
-
-    const pagesPerCopy =
-      pagesToPrint.length > 0 ? pagesToPrint.length : Math.max(1, resolvedDoc.pageCount || 1);
-    const batchedByOs = copies > 10 || copies * pagesPerCopy > 24;
-
-    setFeedback({
-      type: 'ok',
-      text: batchedByOs
-        ? `Print dialog opened for "${doc.title}". Set Copies to ${copies} in your print dialog, then click "Mark Printed".`
-        : `Print dialog opened for "${doc.title}" (${copies} ${copies === 1 ? 'copy' : 'copies'}). Click "Mark Printed" once finished.`,
-    });
+    await recordCompletedPrint(resolvedDoc, copies);
   }
 
   async function handleDirectPrint() {
@@ -645,6 +655,44 @@ export function AdminDashboard({
     }
   }
 
+  async function handleDeleteLogEntry(logId: string) {
+    setBusy(true);
+    setLogFeedback(null);
+    try {
+      await deleteHistoryLog(logId);
+      setConfirmDeleteLogId(null);
+      setLogFeedback({ type: 'ok', text: 'Deleted history log entry.' });
+      onRefresh();
+    } catch (err) {
+      setLogFeedback({ type: 'err', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleClearHistoryLogs() {
+    const hasFilter = logActionFilter !== 'all' || Boolean(logSearch.trim());
+    const targetIds = hasFilter ? filteredLogs.map((l) => l.id) : undefined;
+    if (hasFilter && (!targetIds || targetIds.length === 0)) return;
+
+    setBusy(true);
+    setLogFeedback(null);
+    try {
+      const res = await clearHistoryLogs(targetIds);
+      setConfirmClearLogs(false);
+      setConfirmDeleteLogId(null);
+      setLogFeedback({
+        type: 'ok',
+        text: `Removed ${res.deletedCount} ${res.deletedCount === 1 ? 'log entry' : 'log entries'}.`,
+      });
+      onRefresh();
+    } catch (err) {
+      setLogFeedback({ type: 'err', text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const effectiveWordHtml =
     selectedDoc && liveWordDoc && liveWordDoc.id === selectedDoc.id
       ? liveWordDoc.html
@@ -693,11 +741,11 @@ export function AdminDashboard({
 
         <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-medium text-slate-400">Printed Files</p>
+            <p className="text-xs font-medium text-slate-400">Completed Files</p>
             <p className="text-2xl font-bold font-mono tabular-nums text-emerald-400 mt-1">
               {kpis.printedFiles}
             </p>
-            <p className="text-xs text-slate-400 mt-1">Completed jobs</p>
+            <p className="text-xs text-slate-400 mt-1">Recorded after printing</p>
           </div>
           <FileCheck2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
         </div>
@@ -754,7 +802,7 @@ export function AdminDashboard({
                   [
                     { id: 'all', label: `All (${data.submissions.length})` },
                     { id: 'waiting', label: `Waiting (${kpis.waiting})` },
-                    { id: 'printed', label: `Printed (${kpis.printedFiles})` },
+                    { id: 'printed', label: `Completed (${kpis.printedFiles})` },
                   ] as const
                 ).map((tab) => (
                   <button
@@ -821,6 +869,13 @@ export function AdminDashboard({
                           {' · '}
                           {formatTimeAgo(doc.submittedAt)}
                         </p>
+                        {doc.status === 'printed' && (
+                          <p className="text-[11px] font-mono tabular-nums text-emerald-300/90 mt-0.5 truncate">
+                            Printed {doc.printedCopies}c ({doc.sheetsConsumed}sh)
+                            {doc.assignedPrinterName ? ` · ${doc.assignedPrinterName}` : ''}
+                            {doc.completedAt ? ` · ${formatTimeAgo(doc.completedAt)}` : ''}
+                          </p>
+                        )}
                       </div>
 
                       <div
@@ -1446,7 +1501,7 @@ export function AdminDashboard({
                   type="button"
                   onClick={() =>
                     downloadLogsCsv().catch((err) =>
-                      setFeedback({ type: 'err', text: (err as Error).message })
+                      setLogFeedback({ type: 'err', text: (err as Error).message })
                     )
                   }
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
@@ -1454,8 +1509,54 @@ export function AdminDashboard({
                   <Download className="w-3.5 h-3.5" />
                   Export CSV
                 </button>
+
+                {filteredLogs.length > 0 && (
+                  confirmClearLogs ? (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={handleClearHistoryLogs}
+                        className="px-3 py-2 rounded-xl text-xs font-semibold bg-rose-500 hover:bg-rose-400 text-white whitespace-nowrap shrink-0"
+                      >
+                        Confirm Clear ({filteredLogs.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmClearLogs(false)}
+                        className="px-3 py-2 rounded-xl text-xs font-medium bg-white/10 hover:bg-white/15 text-slate-200 whitespace-nowrap shrink-0"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setConfirmClearLogs(true)}
+                      className="px-3.5 py-2 rounded-xl text-xs font-medium bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 text-rose-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {logActionFilter !== 'all' || logSearch.trim()
+                        ? `Clear Filtered (${filteredLogs.length})`
+                        : 'Clear All Logs'}
+                    </button>
+                  )
+                )}
               </div>
             </div>
+
+            {logFeedback && (
+              <div
+                className={`mx-4 sm:mx-5 mt-4 rounded-xl px-4 py-2.5 text-xs font-medium border ${
+                  logFeedback.type === 'ok'
+                    ? 'bg-emerald-500/12 border-emerald-400/35 text-emerald-200'
+                    : 'bg-rose-500/12 border-rose-400/35 text-rose-200'
+                }`}
+              >
+                {logFeedback.text}
+              </div>
+            )}
 
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
@@ -1465,36 +1566,74 @@ export function AdminDashboard({
                     <th className="py-3 px-4 font-medium">Person</th>
                     <th className="py-3 px-4 font-medium">Event</th>
                     <th className="py-3 px-4 text-right font-medium">Copies / Sheets</th>
-                    <th className="py-3 px-5 font-medium">Details</th>
+                    <th className="py-3 px-4 font-medium">Details</th>
+                    <th className="py-3 px-5 text-right font-medium">Delete</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.07]">
                   {filteredLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-12 text-center text-slate-400">
+                      <td colSpan={6} className="py-12 text-center text-slate-400">
                         {data.logs.length === 0
                           ? 'No activity recorded yet.'
                           : 'No log entries match your current filter.'}
                       </td>
                     </tr>
                   ) : (
-                    filteredLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-white/[0.03]">
-                        <td className="py-3 px-5 font-mono tabular-nums text-slate-400 whitespace-nowrap">
-                          {formatDateTime(log.timestamp)}
-                        </td>
-                        <td className="py-3 px-4 text-slate-200 whitespace-nowrap">
-                          {log.actorName}
-                        </td>
-                        <td className="py-3 px-4 font-mono text-sky-300 whitespace-nowrap">
-                          {log.action.replace(/_/g, ' ')}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
-                          {log.copiesProduced ? `${log.copiesProduced}c / ${log.sheetsUsed ?? 0}sh` : '—'}
-                        </td>
-                        <td className="py-3 px-5 text-slate-300">{log.details}</td>
-                      </tr>
-                    ))
+                    filteredLogs.map((log) => {
+                      const confirmingRow = confirmDeleteLogId === log.id;
+                      return (
+                        <tr key={log.id} className="hover:bg-white/[0.03]">
+                          <td className="py-3 px-5 font-mono tabular-nums text-slate-400 whitespace-nowrap">
+                            {formatDateTime(log.timestamp)}
+                          </td>
+                          <td className="py-3 px-4 text-slate-200 whitespace-nowrap">
+                            {log.actorName}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-sky-300 whitespace-nowrap">
+                            {log.action.replace(/_/g, ' ')}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
+                            {log.copiesProduced
+                              ? `${log.copiesProduced}c / ${log.sheetsUsed ?? 0}sh`
+                              : '—'}
+                          </td>
+                          <td className="py-3 px-4 text-slate-300">{log.details}</td>
+                          <td className="py-3 px-5 text-right whitespace-nowrap">
+                            {confirmingRow ? (
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => handleDeleteLogEntry(log.id)}
+                                  className="px-2 py-1 rounded bg-rose-500 hover:bg-rose-400 text-white font-semibold"
+                                >
+                                  Delete?
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteLogId(null)}
+                                  className="px-2 py-1 rounded bg-white/10 hover:bg-white/15 text-slate-200"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setConfirmDeleteLogId(log.id)}
+                                title="Delete history log entry"
+                                aria-label={`Delete log entry from ${log.actorName}`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-white/10 transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Eye, EyeOff, FileUp, Lock, Printer, ShieldCheck } from 'lucide-react';
 import { AdminDashboard, type AdminTab } from './components/AdminDashboard';
+import {
+  NotificationBell,
+  NotificationToastStack,
+} from './components/NotificationCenter';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PrintablePacket } from './components/PrintablePacket';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { TeacherPortal } from './components/TeacherPortal';
 import backdropImg from './assets/images/glass_ambient_backdrop_1794773699533.jpg';
 import schoolLogo from './assets/images/damaria_school_logo_rounded.png';
-import type { BootstrapPayload, ExamSubmission } from './types';
+import type { AppNotification, BootstrapPayload, ExamSubmission } from './types';
 import {
+  getAdminSessionToken,
   isAdminLoggedIn,
   loadBootstrap,
   loginAdmin,
@@ -18,6 +23,15 @@ import {
   syncUsbDevices,
   type BackendMode,
 } from './utils/apiClient';
+import {
+  getMySubmissionIds,
+  getReadNotificationIds,
+  getSavedSubmissionStatuses,
+  isSenderNotificationForCurrentUser,
+  saveReadNotificationIds,
+  saveSubmissionStatuses,
+  showNativeDesktopNotification,
+} from './utils/notifications';
 import {
   formatUsbDeviceName,
   getPairedUsbDevices,
@@ -43,19 +57,141 @@ export default function App() {
     pdfPageImages: string[];
   } | null>(null);
 
+  const [liveNotifications, setLiveNotifications] = useState<AppNotification[]>([]);
+  const [toasts, setToasts] = useState<AppNotification[]>([]);
+  const [readNotificationIds, setReadNotificationIds] = useState<Set<string>>(() =>
+    getReadNotificationIds()
+  );
+
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
+  const initialBootstrapLoadedRef = useRef(false);
+  const adminUnlockedRef = useRef(adminUnlocked);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    adminUnlockedRef.current = adminUnlocked;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'auth', token: getAdminSessionToken() }));
+    }
+  }, [adminUnlocked]);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const triggerIncomingNotification = useCallback((item: AppNotification) => {
+    if (seenNotificationIdsRef.current.has(item.id)) return;
+    seenNotificationIdsRef.current.add(item.id);
+
+    setLiveNotifications((prev) => {
+      if (prev.some((existing) => existing.id === item.id)) return prev;
+      return [item, ...prev].slice(0, 120);
+    });
+
+    const isMine = isSenderNotificationForCurrentUser(item);
+    const shouldShowToast =
+      adminUnlockedRef.current ||
+      item.type === 'DOCUMENT_SENT' ||
+      item.type === 'PRINT_COMPLETED' ||
+      item.type === 'PRINT_FAILED' ||
+      item.type === 'DOCUMENT_DELETED';
+
+    if (shouldShowToast) {
+      setToasts((prev) => {
+        if (prev.some((t) => t.id === item.id)) return prev;
+        return [item, ...prev].slice(0, 4);
+      });
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== item.id));
+      }, item.type === 'PRINT_COMPLETED' && isMine ? 9000 : 6000);
+    }
+
+    // Fire native OS Desktop Notification for important cross-user actions
+    if (item.type === 'PRINT_COMPLETED' && isMine) {
+      showNativeDesktopNotification('Your Document is Ready', item.message, `done-${item.id}`);
+    } else if (item.type === 'PRINT_FAILED' && (isMine || adminUnlockedRef.current)) {
+      showNativeDesktopNotification(item.title, item.message, `fail-${item.id}`);
+    } else if (item.type === 'DOCUMENT_SENT' && adminUnlockedRef.current) {
+      showNativeDesktopNotification(item.title, item.message, `sent-${item.id}`);
+    }
+  }, []);
+
   const fetchBootstrap = useCallback(async () => {
     try {
       const { payload, mode } = await loadBootstrap();
+      const adminNow = isAdminLoggedIn();
       setData(payload);
       setBackendMode(mode);
-      setAdminUnlocked(isAdminLoggedIn());
+      setAdminUnlocked(adminNow);
+      adminUnlockedRef.current = adminNow;
       setError('');
+
+      const serverNotifications = payload.notifications || [];
+      const myIds = new Set(getMySubmissionIds());
+      const prevStatusMap = getSavedSubmissionStatuses();
+      const nextStatusMap: Record<string, string> = { ...prevStatusMap };
+
+      if (!initialBootstrapLoadedRef.current) {
+        initialBootstrapLoadedRef.current = true;
+        for (const n of serverNotifications) {
+          seenNotificationIdsRef.current.add(n.id);
+        }
+        setLiveNotifications(serverNotifications);
+
+        // If any of this sender's documents finished printing while their tab was closed, notify immediately
+        for (const sub of payload.submissions) {
+          if (!myIds.has(sub.id)) continue;
+          const prevStatus = prevStatusMap[sub.id];
+          if (prevStatus && prevStatus !== 'printed' && sub.status === 'printed') {
+            const synthetic: AppNotification = {
+              id: `done_sync_${sub.id}_${sub.completedAt || sub.printedCopies}`,
+              timestamp: sub.completedAt || new Date().toISOString(),
+              type: 'PRINT_COMPLETED',
+              audience: 'sender',
+              title: 'Printing Completed',
+              message: `"${sub.title}" is done (${sub.printedCopies} copies, ${sub.sheetsConsumed} sheets).`,
+              submissionId: sub.id,
+              senderName: sub.senderName,
+              printerName: sub.assignedPrinterName || undefined,
+            };
+            triggerIncomingNotification(synthetic);
+          }
+          nextStatusMap[sub.id] = sub.status;
+        }
+        saveSubmissionStatuses(nextStatusMap);
+      } else {
+        setLiveNotifications((prev) => {
+          const byId = new Map<string, AppNotification>();
+          for (const item of serverNotifications) byId.set(item.id, item);
+          for (const item of prev) {
+            if (!byId.has(item.id) && (adminNow || item.audience !== 'admin')) {
+              byId.set(item.id, item);
+            }
+          }
+          return Array.from(byId.values())
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+            .slice(0, 120);
+        });
+
+        for (const n of [...serverNotifications].reverse()) {
+          if (!seenNotificationIdsRef.current.has(n.id)) {
+            triggerIncomingNotification(n);
+          }
+        }
+
+        for (const sub of payload.submissions) {
+          if (myIds.has(sub.id)) {
+            nextStatusMap[sub.id] = sub.status;
+          }
+        }
+        saveSubmissionStatuses(nextStatusMap);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [triggerIncomingNotification]);
 
   useEffect(() => {
     fetchBootstrap();
@@ -65,6 +201,86 @@ export default function App() {
     const timer = setInterval(fetchBootstrap, 5000);
     return () => clearInterval(timer);
   }, [fetchBootstrap]);
+
+  // Real-time WebSocket stream for instant action notifications (Express server mode)
+  useEffect(() => {
+    if (backendMode !== 'server' || typeof window === 'undefined') return;
+    let active = true;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (!active) return;
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const token = getAdminSessionToken();
+      const wsUrl = `${proto}//${window.location.host}/ws/events${
+        token ? `?token=${encodeURIComponent(token)}` : ''
+      }`;
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data) as {
+              type?: string;
+              notification?: AppNotification;
+              syncRequired?: boolean;
+            };
+            if (msg.type === 'notification' && msg.notification) {
+              triggerIncomingNotification(msg.notification);
+            }
+            if (msg.syncRequired) {
+              fetchBootstrap();
+            }
+          } catch {
+            // ignore malformed ws message
+          }
+        };
+
+        ws.onclose = () => {
+          if (wsRef.current === ws) wsRef.current = null;
+          if (active) {
+            reconnectTimer = setTimeout(connect, 3500);
+          }
+        };
+      } catch {
+        // fallback polling handles updates
+      }
+    };
+
+    connect();
+
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, [backendMode, fetchBootstrap, triggerIncomingNotification]);
+
+  const visibleNotifications = useMemo(() => {
+    return liveNotifications.filter((n) => adminUnlocked || n.audience !== 'admin');
+  }, [liveNotifications, adminUnlocked]);
+
+  const handleMarkNotificationRead = useCallback((id: string) => {
+    setReadNotificationIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      saveReadNotificationIds(next);
+      return next;
+    });
+  }, []);
+
+  const handleMarkAllNotificationsRead = useCallback(() => {
+    setReadNotificationIds((prev) => {
+      const next = new Set(prev);
+      for (const n of visibleNotifications) {
+        next.add(n.id);
+      }
+      saveReadNotificationIds(next);
+      return next;
+    });
+  }, [visibleNotifications]);
 
   // Sync paired USB devices only after Admin Portal is unlocked
   useEffect(() => {
@@ -171,9 +387,27 @@ export default function App() {
 
     const prevTitle = document.title;
     document.title = ' ';
+    let afterPrintFired = false;
+    let resolveAfterPrint: (() => void) | null = null;
+    const afterPrintPromise = new Promise<void>((resolve) => {
+      resolveAfterPrint = resolve;
+    });
+    const onAfterPrint = () => {
+      afterPrintFired = true;
+      resolveAfterPrint?.();
+    };
+    window.addEventListener('afterprint', onAfterPrint, { once: true });
+
     try {
       window.print();
+      if (!afterPrintFired) {
+        await Promise.race([
+          afterPrintPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, 250)),
+        ]);
+      }
     } finally {
+      window.removeEventListener('afterprint', onAfterPrint);
       document.title = prevTitle;
     }
   }
@@ -267,6 +501,12 @@ export default function App() {
             </nav>
 
             <div className="flex items-center gap-2.5 shrink-0">
+              <NotificationBell
+                notifications={visibleNotifications}
+                readIds={readNotificationIds}
+                onMarkRead={handleMarkNotificationRead}
+                onMarkAllRead={handleMarkAllNotificationsRead}
+              />
               <PWAInstallButton />
               <button
                 type="button"
@@ -367,10 +607,11 @@ export default function App() {
                 >
                   <TeacherPortal
                     submissions={data.submissions}
+                    notifications={visibleNotifications}
                     publicDomain={data.publicDomain}
                     liveAppUrl={data.liveAppUrl}
                     backendMode={backendMode}
-                    onSubmitted={fetchBootstrap}
+                    onSubmitted={() => fetchBootstrap()}
                     onRefresh={fetchBootstrap}
                   />
                 </motion.div>
@@ -495,6 +736,7 @@ export default function App() {
         </div>
       </div>
 
+      <NotificationToastStack toasts={toasts} onDismiss={dismissToast} />
       <OfflineIndicator />
 
       <PrintablePacket

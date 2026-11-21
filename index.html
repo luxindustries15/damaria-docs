@@ -38,6 +38,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      window.__damariaDeferredInstallPrompt = null;
+      window.__damariaAppInstalled = false;
+      window.addEventListener('beforeinstallprompt', function (e) {
+        e.preventDefault();
+        window.__damariaDeferredInstallPrompt = e;
+        window.dispatchEvent(new Event('damaria-pwa-state'));
+      });
+      window.addEventListener('appinstalled', function () {
+        window.__damariaDeferredInstallPrompt = null;
+        window.__damariaAppInstalled = true;
+        window.dispatchEvent(new Event('damaria-pwa-state'));
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

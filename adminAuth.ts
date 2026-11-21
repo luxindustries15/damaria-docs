@@ -82,6 +82,7 @@ export function sanitizeBootstrapForPublic(payload: BootstrapPayload): Bootstrap
     liveAppUrl: payload.liveAppUrl,
     printers: [],
     logs: [],
+    notifications: (payload.notifications || []).filter((n) => n.audience !== 'admin'),
     submissions: payload.submissions.map((sub) => ({
       ...sub,
       fileUrl: null,

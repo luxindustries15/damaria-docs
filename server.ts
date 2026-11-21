@@ -61,6 +61,7 @@ function createEmptyStore(): BootstrapPayload {
     printers: [],
     submissions: [],
     logs: [],
+    notifications: [],
   };
 }
 

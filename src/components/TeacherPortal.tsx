@@ -1,5 +1,6 @@
 import { useMemo, useState, type DragEvent, type FormEvent } from 'react';
 import {
+  BellRing,
   CheckCircle2,
   FileText,
   FileUp,
@@ -10,28 +11,38 @@ import {
   Send,
   X,
 } from 'lucide-react';
-import type { ExamSubmission, PaperSize } from '../types';
+import type { AppNotification, ExamSubmission, PaperSize } from '../types';
 import schoolLogo from '../assets/images/damaria_school_logo_rounded.png';
 import { submitDocument, type BackendMode } from '../utils/apiClient';
 import { formatBytes, formatTimeAgo } from '../utils/format';
+import {
+  getNotificationPermission,
+  getSavedSenderName,
+  isSenderNotificationForCurrentUser,
+  rememberSentSubmission,
+  requestDesktopNotificationPermission,
+  saveSenderName,
+} from '../utils/notifications';
 import { getPdfPageCountFromFile } from '../utils/pdfRenderer';
 import { SubmissionStatusLabel } from './StatusBadge';
 
 interface TeacherPortalProps {
   submissions: ExamSubmission[];
+  notifications?: AppNotification[];
   publicDomain?: string;
   liveAppUrl?: string;
   backendMode?: BackendMode;
-  onSubmitted: () => void;
+  onSubmitted: (created?: ExamSubmission) => void;
   onRefresh: () => void;
 }
 
 export function TeacherPortal({
   submissions,
+  notifications = [],
   onSubmitted,
   onRefresh,
 }: TeacherPortalProps) {
-  const [senderName, setSenderName] = useState('');
+  const [senderName, setSenderName] = useState(() => getSavedSenderName());
   const [title, setTitle] = useState('');
   const [requestedCopies, setRequestedCopies] = useState('');
   const [detectedPageCount, setDetectedPageCount] = useState<number | null>(null);
@@ -44,6 +55,8 @@ export function TeacherPortal({
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [dismissedAlertIds, setDismissedAlertIds] = useState<Set<string>>(() => new Set());
+  const [notifPermission, setNotifPermission] = useState(() => getNotificationPermission());
 
   // Queue filter state
   const [queueSearch, setQueueSearch] = useState('');
@@ -115,7 +128,12 @@ export function TeacherPortal({
       formData.append('notes', notes);
       formData.append('documentFile', selectedFile);
 
+      if (getNotificationPermission() === 'default') {
+        requestDesktopNotificationPermission().then((perm) => setNotifPermission(perm));
+      }
+
       const data = await submitDocument(formData);
+      rememberSentSubmission(data);
 
       setTitle('');
       setNotes('');
@@ -130,7 +148,7 @@ export function TeacherPortal({
         type: 'ok',
         text: `Sent "${data.title}" (${data.requestedCopies} copies) to the Damaria Docs Print Desk.`,
       });
-      onSubmitted();
+      onSubmitted(data);
     } catch (err) {
       setFeedback({ type: 'err', text: (err as Error).message });
     } finally {
@@ -200,7 +218,10 @@ export function TeacherPortal({
               type="text"
               required
               value={senderName}
-              onChange={(e) => setSenderName(e.target.value)}
+              onChange={(e) => {
+                setSenderName(e.target.value);
+                saveSenderName(e.target.value);
+              }}
               placeholder="Enter your name"
               className="glass-input w-full rounded-xl px-4 py-2.5 text-sm"
             />
@@ -472,8 +493,82 @@ export function TeacherPortal({
         </div>
       </form>
 
-      {/* Right: Real Sent Documents Tracker + Share Link */}
+      {/* Right: Real Sent Documents Tracker & Sender Completion Alerts */}
       <div className="lg:col-span-5 space-y-6">
+        {(() => {
+          const myCompletedAlerts = notifications
+            .filter(
+              (n) =>
+                (n.type === 'PRINT_COMPLETED' || n.type === 'PRINT_FAILED') &&
+                !dismissedAlertIds.has(n.id) &&
+                isSenderNotificationForCurrentUser(n, senderName)
+            )
+            .slice(0, 3);
+
+          if (myCompletedAlerts.length === 0 && notifPermission !== 'default') return null;
+
+          return (
+            <div className="space-y-2.5">
+              {notifPermission === 'default' && (
+                <div className="glass-panel rounded-2xl px-4 py-3 flex items-center justify-between gap-3 border border-sky-400/25">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <BellRing className="w-4 h-4 text-sky-400 shrink-0" />
+                    <p className="text-xs text-slate-200">
+                      Get an automatic desktop pop-up when your printed document is ready.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const next = await requestDesktopNotificationPermission();
+                      setNotifPermission(next);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 whitespace-nowrap shrink-0 transition-colors"
+                  >
+                    Enable Alerts
+                  </button>
+                </div>
+              )}
+
+              {myCompletedAlerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`rounded-2xl px-4 py-3 border flex items-start justify-between gap-3 ${
+                    alert.type === 'PRINT_COMPLETED'
+                      ? 'bg-emerald-500/12 border-emerald-400/35 text-emerald-100'
+                      : 'bg-rose-500/12 border-rose-400/35 text-rose-100'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <CheckCircle2
+                      className={`w-4 h-4 shrink-0 mt-0.5 ${
+                        alert.type === 'PRINT_COMPLETED' ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold">{alert.title}</p>
+                      <p className="text-xs opacity-90 mt-0.5">{alert.message}</p>
+                      <p className="text-[11px] font-mono opacity-75 mt-1">
+                        {formatTimeAgo(alert.timestamp)}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDismissedAlertIds((prev) => new Set([...prev, alert.id]))
+                    }
+                    aria-label="Dismiss completed alert"
+                    className="p-1 rounded-lg hover:bg-white/10 transition-colors shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
         <div className="glass-panel rounded-2xl p-6 space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-3.5">
           <div>
@@ -549,8 +644,10 @@ export function TeacherPortal({
                       {formatTimeAgo(sub.submittedAt)}
                     </p>
                     {sub.status === 'printed' && sub.printedCopies > 0 && (
-                      <p className="text-[11px] text-emerald-300/85 mt-0.5 font-mono tabular-nums">
-                        Printed {sub.printedCopies} copies ({sub.sheetsConsumed} sheets)
+                      <p className="text-[11px] text-emerald-300/90 mt-0.5 font-mono tabular-nums">
+                        Done: {sub.printedCopies} copies ({sub.sheetsConsumed} sheets)
+                        {sub.assignedPrinterName ? ` · ${sub.assignedPrinterName}` : ''}
+                        {sub.completedAt ? ` · ${formatTimeAgo(sub.completedAt)}` : ''}
                       </p>
                     )}
                   </div>

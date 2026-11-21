@@ -11,6 +11,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
+        useCredentials: true,
         includeAssets: [
           'damaria-favicon-32.png',
           'damaria-favicon-64.png',
@@ -32,6 +33,9 @@ export default defineConfig(() => {
           start_url: '/',
           scope: '/',
           categories: ['productivity', 'education', 'utilities'],
+          launch_handler: {
+            client_mode: 'focus-existing',
+          },
           icons: [
             {
               src: '/pwa-192x192.png',
@@ -56,6 +60,7 @@ export default defineConfig(() => {
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,jpg,svg,woff,woff2,mjs}'],
+          globIgnores: ['assets/aistudio/**'],
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
@@ -94,7 +99,7 @@ export default defineConfig(() => {
         },
         devOptions: {
           enabled: true,
-          type: 'module',
+          type: 'classic',
         },
       }),
     ],

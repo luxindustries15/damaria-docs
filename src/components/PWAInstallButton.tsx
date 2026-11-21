@@ -13,11 +13,10 @@ export function PWAInstallButton() {
   }
 
   async function handleClick() {
-    if (isInstallable) {
-      const accepted = await install();
-      if (accepted) return;
+    const outcome = await install();
+    if (outcome === 'unavailable') {
+      setShowGuide(true);
     }
-    setShowGuide(true);
   }
 
   return (
@@ -25,8 +24,16 @@ export function PWAInstallButton() {
       <button
         type="button"
         onClick={handleClick}
-        title="Install Damaria Docs as a Desktop App"
-        className="px-3.5 py-2 rounded-xl text-xs font-medium bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-slate-100 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+        title={
+          isInstallable
+            ? 'Install Damaria Docs onto your Desktop'
+            : 'Open Desktop App install options'
+        }
+        className={`px-3.5 py-2 rounded-xl text-xs font-medium border transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+          isInstallable
+            ? 'bg-sky-500/20 hover:bg-sky-500/30 border-sky-400/50 text-sky-100'
+            : 'bg-white/[0.08] hover:bg-white/[0.15] border-white/15 text-slate-100'
+        }`}
       >
         <MonitorDown className="w-3.5 h-3.5 text-sky-400" />
         <span className="hidden sm:inline">Install App</span>
@@ -77,10 +84,9 @@ export function PWAInstallButton() {
             ) : isEmbeddedIframe ? (
               <div className="rounded-xl bg-slate-950/60 border border-white/10 p-4 space-y-3 text-xs text-slate-200">
                 <p>
-                  Desktop installation is blocked inside an embedded preview frame. Open Damaria
-                  Docs in its own browser window first, then click{' '}
-                  <span className="text-white font-semibold">Install App</span> or the install
-                  button in the address bar.
+                  Browsers disable 1-click app installation inside an embedded preview box. Open
+                  Damaria Docs in its own browser tab, then click{' '}
+                  <span className="text-white font-semibold">Install App</span>.
                 </p>
                 {typeof window !== 'undefined' && (
                   <a
@@ -96,20 +102,24 @@ export function PWAInstallButton() {
               </div>
             ) : (
               <div className="rounded-xl bg-slate-950/60 border border-white/10 p-4 space-y-2 text-xs text-slate-200">
-                <p className="font-semibold text-white">Chrome or Edge (Windows / Mac / Linux):</p>
-                <p>
-                  1. Click the <span className="text-sky-300 font-medium">Install</span> icon on the
-                  right side of your address bar.
+                <p className="font-semibold text-white">
+                  Direct Install in Chrome or Edge:
                 </p>
                 <p>
-                  2. Or open the browser menu (<span className="font-mono">⋮</span>) →{' '}
+                  1. Make sure you are not in an Incognito/Guest window (which blocks app installs).
+                </p>
+                <p>
+                  2. Click the <span className="text-sky-300 font-medium">Install</span> icon on the
+                  right side of your address bar, or open menu (<span className="font-mono">⋮</span>
+                  ) →{' '}
                   <span className="text-white font-medium">
                     Cast, save, and share → Install Damaria Docs
                   </span>
                   .
                 </p>
                 <p className="text-slate-400 pt-1">
-                  On Mac Safari: click File → Add to Dock.
+                  If you already installed it once, open it from your Desktop / Start Menu or Apps
+                  list.
                 </p>
               </div>
             )}

@@ -8,6 +8,8 @@ import { apiUrl } from './api';
 import {
   browserAddPrinter,
   browserBootstrap,
+  browserClearLogs,
+  browserDeleteLog,
   browserDeletePrinter,
   browserDeleteSubmission,
   browserDownloadBridgeScript,
@@ -51,6 +53,13 @@ export function getAdminAuthHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${adminToken}` };
   }
   return {};
+}
+
+export function getAdminSessionToken(): string | null {
+  if (adminToken && Date.now() < adminExpiresAt) {
+    return adminToken;
+  }
+  return null;
 }
 
 function clearMemorySession() {
@@ -404,6 +413,40 @@ export async function downloadOriginalSubmission(submission: ExamSubmission): Pr
   }
   const blob = await res.blob();
   triggerBrowserDownload(blob, submission.fileName || `${submission.title}.bin`);
+}
+
+export async function deleteHistoryLog(id: string): Promise<void> {
+  if (currentMode === 'browser') {
+    return browserDeleteLog(id);
+  }
+  try {
+    await fetchJsonWithTimeout(apiUrl(`/api/logs/${encodeURIComponent(id)}`), { method: 'DELETE' });
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      currentMode = 'browser';
+      return browserDeleteLog(id);
+    }
+    throw err;
+  }
+}
+
+export async function clearHistoryLogs(ids?: string[]): Promise<{ deletedCount: number }> {
+  if (currentMode === 'browser') {
+    return browserClearLogs(ids);
+  }
+  try {
+    return (await fetchJsonWithTimeout(apiUrl('/api/logs'), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids && ids.length > 0 ? { ids } : {}),
+    })) as { deletedCount: number };
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      currentMode = 'browser';
+      return browserClearLogs(ids);
+    }
+    throw err;
+  }
 }
 
 export async function downloadLogsCsv(): Promise<void> {
