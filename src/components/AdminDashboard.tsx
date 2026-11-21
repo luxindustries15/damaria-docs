@@ -709,7 +709,7 @@ export function AdminDashboard({
   return (
     <div className="space-y-6">
       {onLockAdmin && (
-        <div className="flex items-center justify-between gap-3 px-1">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 px-1">
           <p className="text-xs text-slate-400">
             Admin Portal unlocked · Delete, print, and machine controls active
           </p>
@@ -725,49 +725,49 @@ export function AdminDashboard({
       )}
 
       {/* Real Live Metrics Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium text-slate-400">Waiting to Print</p>
-            <p className="text-2xl font-bold font-mono tabular-nums text-white mt-1">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="glass-panel rounded-2xl p-3.5 sm:p-5 flex items-start justify-between gap-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] sm:text-xs font-medium text-slate-400">Waiting to Print</p>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-white mt-1">
               {kpis.waiting}
             </p>
-            <p className="text-xs text-slate-400 mt-1 font-mono tabular-nums">
+            <p className="text-[11px] sm:text-xs text-slate-400 mt-1 font-mono tabular-nums truncate">
               {kpis.waitingCopies.toLocaleString()} copies requested
             </p>
           </div>
           <Clock className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
         </div>
 
-        <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium text-slate-400">Completed Files</p>
-            <p className="text-2xl font-bold font-mono tabular-nums text-emerald-400 mt-1">
+        <div className="glass-panel rounded-2xl p-3.5 sm:p-5 flex items-start justify-between gap-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] sm:text-xs font-medium text-slate-400">Completed Files</p>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-400 mt-1">
               {kpis.printedFiles}
             </p>
-            <p className="text-xs text-slate-400 mt-1">Recorded after printing</p>
+            <p className="text-[11px] sm:text-xs text-slate-400 mt-1">Recorded after printing</p>
           </div>
           <FileCheck2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
         </div>
 
-        <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium text-slate-400">Paper Used</p>
-            <p className="text-2xl font-bold font-mono tabular-nums text-white mt-1">
+        <div className="glass-panel rounded-2xl p-3.5 sm:p-5 flex items-start justify-between gap-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] sm:text-xs font-medium text-slate-400">Paper Used</p>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-white mt-1">
               {kpis.paperUsed.toLocaleString()}
             </p>
-            <p className="text-xs text-slate-400 mt-1">Total sheets produced</p>
+            <p className="text-[11px] sm:text-xs text-slate-400 mt-1">Total sheets produced</p>
           </div>
           <Layers className="w-4 h-4 text-slate-300 shrink-0 mt-0.5" />
         </div>
 
-        <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium text-slate-400">Machines Ready</p>
-            <p className="text-2xl font-bold font-mono tabular-nums text-sky-300 mt-1">
+        <div className="glass-panel rounded-2xl p-3.5 sm:p-5 flex items-start justify-between gap-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] sm:text-xs font-medium text-slate-400">Machines Ready</p>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-sky-300 mt-1">
               {kpis.totalMachines === 0 ? 'Browser' : `${kpis.printersReady} / ${kpis.totalMachines}`}
             </p>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-[11px] sm:text-xs text-slate-400 mt-1 truncate">
               {kpis.totalMachines === 0
                 ? 'This device print ready'
                 : kpis.printersReady > 0
@@ -809,7 +809,7 @@ export function AdminDashboard({
                     key={tab.id}
                     type="button"
                     onClick={() => setStatusFilter(tab.id)}
-                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                    className={`px-1.5 sm:px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap truncate ${
                       statusFilter === tab.id
                         ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                         : 'text-slate-400 hover:text-white border border-transparent'
@@ -924,7 +924,7 @@ export function AdminDashboard({
           </div>
 
           {/* Right: Preview & Direct Print */}
-          <div className="lg:col-span-7 glass-panel rounded-2xl p-5 sm:p-6 space-y-5">
+          <div className="lg:col-span-7 glass-panel rounded-2xl p-4 sm:p-6 space-y-5">
             {!selectedDoc ? (
               <div className="py-20 text-center space-y-2.5">
                 <FileText className="w-8 h-8 text-slate-500 mx-auto" />
@@ -1472,22 +1472,22 @@ export function AdminDashboard({
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative">
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                <div className="relative flex-1 min-w-[180px] sm:flex-initial">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={logSearch}
                     onChange={(e) => setLogSearch(e.target.value)}
                     placeholder="Search person or details..."
-                    className="glass-input rounded-xl pl-8 pr-3 py-2 text-xs w-48 sm:w-56"
+                    className="glass-input rounded-xl pl-8 pr-3 py-2 text-xs w-full sm:w-52"
                   />
                 </div>
 
                 <select
                   value={logActionFilter}
                   onChange={(e) => setLogActionFilter(e.target.value)}
-                  className="glass-input rounded-xl px-3 py-2 text-xs"
+                  className="glass-input rounded-xl px-3 py-2 text-xs w-full sm:w-auto"
                 >
                   <option value="all">All Events</option>
                   <option value="DOCUMENT_SENT">Document Sent</option>

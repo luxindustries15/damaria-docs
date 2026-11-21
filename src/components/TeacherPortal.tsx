@@ -180,12 +180,12 @@ export function TeacherPortal({
       {/* Left: Send PDF / Word Document Form */}
       <form
         onSubmit={handleSubmit}
-        className="lg:col-span-7 glass-panel rounded-2xl p-6 sm:p-7 space-y-6"
+        className="lg:col-span-7 glass-panel rounded-2xl p-4 sm:p-7 space-y-5 sm:space-y-6"
       >
-        <div className="border-b border-white/10 pb-4 flex items-center gap-4">
+        <div className="border-b border-white/10 pb-4 flex items-center gap-3 sm:gap-4">
           {logoFailed ? (
-            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
-              <FileText className="w-7 h-7" />
+            <div className="w-12 h-12 sm:w-20 sm:h-20 rounded-2xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
+              <FileText className="w-6 h-6 sm:w-7 sm:h-7" />
             </div>
           ) : (
             <img
@@ -193,14 +193,14 @@ export function TeacherPortal({
               alt="Damaria Pre & Primary School — Education For Caring and Compassionate"
               referrerPolicy="no-referrer"
               onError={() => setLogoFailed(true)}
-              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-contain shrink-0"
+              className="w-12 h-12 sm:w-20 sm:h-20 rounded-2xl object-contain shrink-0"
             />
           )}
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-white text-balance">
+            <h1 className="text-lg sm:text-2xl font-bold tracking-tight text-white text-balance">
               Send a Document for Printing
             </h1>
-            <p className="text-sm text-slate-300 mt-1">
+            <p className="text-xs sm:text-sm text-slate-300 mt-1">
               Attach a PDF or Word file, set your required copies, and send it straight to the Print
               Desk.
             </p>
@@ -270,7 +270,7 @@ export function TeacherPortal({
             }}
             onDragLeave={() => setDragActive(false)}
             onDrop={handleDrop}
-            className={`flex flex-col items-center justify-center text-center rounded-2xl border border-dashed px-6 py-8 cursor-pointer transition-colors ${
+            className={`flex flex-col items-center justify-center text-center rounded-2xl border border-dashed px-4 py-6 sm:px-6 sm:py-8 cursor-pointer transition-colors ${
               dragActive
                 ? 'border-sky-400 bg-sky-500/12'
                 : selectedFile
@@ -394,7 +394,7 @@ export function TeacherPortal({
               <button
                 type="button"
                 onClick={() => setDuplex(true)}
-                className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`py-2 px-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap ${
                   duplex === true
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
@@ -405,7 +405,7 @@ export function TeacherPortal({
               <button
                 type="button"
                 onClick={() => setDuplex(false)}
-                className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`py-2 px-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap ${
                   duplex === false
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
@@ -422,18 +422,18 @@ export function TeacherPortal({
               <button
                 type="button"
                 onClick={() => setColorMode('bw')}
-                className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`py-2 px-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap ${
                   colorMode === 'bw'
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
                 }`}
               >
-                Black & White
+                Black &amp; White
               </button>
               <button
                 type="button"
                 onClick={() => setColorMode('color')}
-                className={`py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`py-2 px-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap ${
                   colorMode === 'color'
                     ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
                     : 'text-slate-400 hover:text-white border border-transparent'
@@ -485,7 +485,7 @@ export function TeacherPortal({
           <button
             type="submit"
             disabled={submitting}
-            className="px-6 py-3 rounded-xl text-sm font-semibold bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 transition-colors inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+            className="w-full sm:w-auto px-6 py-3 rounded-xl text-sm font-semibold bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 transition-colors inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
           >
             <Send className="w-4 h-4" />
             {submitting ? 'Sending Document...' : 'Send for Printing'}
@@ -569,7 +569,7 @@ export function TeacherPortal({
           );
         })()}
 
-        <div className="glass-panel rounded-2xl p-6 space-y-4">
+        <div className="glass-panel rounded-2xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-3.5">
           <div>
             <h2 className="text-base font-semibold text-white">Sent Documents</h2>

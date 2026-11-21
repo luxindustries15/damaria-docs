@@ -31,7 +31,12 @@ import {
   saveReadNotificationIds,
   saveSubmissionStatuses,
   showNativeDesktopNotification,
+  syncAppIconBadge,
 } from './utils/notifications';
+import {
+  playIphoneMessageTone,
+  unlockNotificationSound,
+} from './utils/notificationSound';
 import {
   formatUsbDeviceName,
   getPairedUsbDevices,
@@ -97,6 +102,7 @@ export default function App() {
       item.type === 'DOCUMENT_DELETED';
 
     if (shouldShowToast) {
+      playIphoneMessageTone();
       setToasts((prev) => {
         if (prev.some((t) => t.id === item.id)) return prev;
         return [item, ...prev].slice(0, 4);
@@ -262,6 +268,33 @@ export default function App() {
     return liveNotifications.filter((n) => adminUnlocked || n.audience !== 'admin');
   }, [liveNotifications, adminUnlocked]);
 
+  const unreadNotificationCount = useMemo(() => {
+    return visibleNotifications.filter((n) => !readNotificationIds.has(n.id)).length;
+  }, [visibleNotifications, readNotificationIds]);
+
+  // Unlock Web Audio playback on first user interaction so incoming notification chimes work reliably
+  useEffect(() => {
+    const unlock = () => {
+      unlockNotificationSound();
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
+  // Keep phone/desktop OS home-screen app icon badge synced with unread notifications
+  useEffect(() => {
+    syncAppIconBadge(unreadNotificationCount);
+    const onVisibility = () => {
+      syncAppIconBadge(unreadNotificationCount);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [unreadNotificationCount]);
+
   const handleMarkNotificationRead = useCallback((id: string) => {
     setReadNotificationIds((prev) => {
       const next = new Set(prev);
@@ -280,6 +313,7 @@ export default function App() {
       saveReadNotificationIds(next);
       return next;
     });
+    syncAppIconBadge(0);
   }, [visibleNotifications]);
 
   // Sync paired USB devices only after Admin Portal is unlocked
@@ -431,12 +465,12 @@ export default function App() {
           <div className="absolute inset-0 bg-gradient-to-br from-slate-950/92 via-slate-950/78 to-slate-900/88" />
         </div>
 
-        <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
+        <div className="max-w-7xl mx-auto px-3 py-3 sm:p-6 space-y-4 sm:space-y-6">
           {/* 3-Zone Top Bar: [Brand Title] — [4 single-line nav links] — [1 primary action] */}
-          <header className="glass-panel rounded-2xl px-6 py-3.5 flex items-center justify-between gap-8">
-            <div className="flex items-center gap-2.5 shrink-0">
+          <header className="relative z-40 glass-panel rounded-2xl px-3 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-4">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
               {logoFailed ? (
-                <div className="w-9 h-9 rounded-xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400 shrink-0">
                   <Printer className="w-4 h-4" />
                 </div>
               ) : (
@@ -445,15 +479,15 @@ export default function App() {
                   alt="Damaria Pre & Primary School logo"
                   referrerPolicy="no-referrer"
                   onError={() => setLogoFailed(true)}
-                  className="w-9 h-9 rounded-xl object-contain shrink-0"
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl object-contain shrink-0"
                 />
               )}
-              <span className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0">
+              <span className="font-display text-sm sm:text-lg font-bold tracking-tight text-white truncate">
                 Damaria Docs
               </span>
             </div>
 
-            <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
+            <nav className="hidden md:flex items-center gap-6 lg:gap-7 text-sm font-medium shrink-0">
               <button
                 type="button"
                 onClick={() => setViewMode('send')}
@@ -500,7 +534,7 @@ export default function App() {
               </button>
             </nav>
 
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
               <NotificationBell
                 notifications={visibleNotifications}
                 readIds={readNotificationIds}
@@ -513,7 +547,7 @@ export default function App() {
                 onClick={() =>
                   viewMode === 'send' ? openAdminSection('documents') : setViewMode('send')
                 }
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="px-2.5 sm:px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 {viewMode === 'send' ? (
                   <>
@@ -522,12 +556,14 @@ export default function App() {
                     ) : (
                       <Lock className="w-3.5 h-3.5" />
                     )}
-                    Admin Portal
+                    <span className="sm:hidden">Admin</span>
+                    <span className="hidden sm:inline">Admin Portal</span>
                   </>
                 ) : (
                   <>
                     <FileUp className="w-3.5 h-3.5" />
-                    Send Document
+                    <span className="sm:hidden">Send</span>
+                    <span className="hidden sm:inline">Send Document</span>
                   </>
                 )}
               </button>
@@ -535,12 +571,12 @@ export default function App() {
           </header>
 
           {/* Compact Mobile Workspace Switcher */}
-          <div className="md:hidden flex items-center gap-1 p-1 rounded-xl glass-panel-subtle overflow-x-auto">
+          <div className="md:hidden grid grid-cols-4 gap-1 p-1 rounded-xl glass-panel-subtle">
             <button
               type="button"
               onClick={() => setViewMode('send')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 ${
-                viewMode === 'send' ? 'bg-sky-500/25 text-sky-200' : 'text-slate-400'
+              className={`px-1.5 py-2 rounded-lg text-[11px] sm:text-xs font-medium text-center truncate transition-colors ${
+                viewMode === 'send' ? 'bg-sky-500/25 text-sky-200' : 'text-slate-400 hover:text-white'
               }`}
             >
               Send File
@@ -548,21 +584,21 @@ export default function App() {
             <button
               type="button"
               onClick={() => openAdminSection('documents')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 ${
+              className={`px-1.5 py-2 rounded-lg text-[11px] sm:text-xs font-medium text-center truncate transition-colors ${
                 viewMode === 'admin' && adminTab === 'documents'
                   ? 'bg-sky-500/25 text-sky-200'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
-              Print Queue
+              <span className="hidden min-[400px]:inline">Print </span>Queue
             </button>
             <button
               type="button"
               onClick={() => openAdminSection('printers')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 ${
+              className={`px-1.5 py-2 rounded-lg text-[11px] sm:text-xs font-medium text-center truncate transition-colors ${
                 viewMode === 'admin' && adminTab === 'printers'
                   ? 'bg-sky-500/25 text-sky-200'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               Machines
@@ -570,13 +606,13 @@ export default function App() {
             <button
               type="button"
               onClick={() => openAdminSection('logs')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 ${
+              className={`px-1.5 py-2 rounded-lg text-[11px] sm:text-xs font-medium text-center truncate transition-colors ${
                 viewMode === 'admin' && adminTab === 'logs'
                   ? 'bg-sky-500/25 text-sky-200'
-                  : 'text-slate-400'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
-              Activity Logs
+              <span className="hidden min-[400px]:inline">Activity </span>Logs
             </button>
           </div>
 

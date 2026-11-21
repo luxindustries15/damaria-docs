@@ -125,6 +125,23 @@ export async function requestDesktopNotificationPermission(): Promise<
   }
 }
 
+export function syncAppIconBadge(unreadCount: number): void {
+  if (typeof navigator === 'undefined') return;
+  const count = Math.max(0, Math.floor(unreadCount));
+
+  try {
+    if (count > 0 && typeof navigator.setAppBadge === 'function') {
+      navigator.setAppBadge(count).catch(() => undefined);
+    } else if (count === 0 && typeof navigator.clearAppBadge === 'function') {
+      navigator.clearAppBadge().catch(() => undefined);
+    } else if (count === 0 && typeof navigator.setAppBadge === 'function') {
+      navigator.setAppBadge(0).catch(() => undefined);
+    }
+  } catch {
+    // ignore unsupported environments
+  }
+}
+
 export async function showNativeDesktopNotification(
   title: string,
   body: string,
@@ -137,6 +154,7 @@ export async function showNativeDesktopNotification(
     icon: '/pwa-192x192.png',
     badge: '/pwa-192x192.png',
     tag,
+    silent: false,
   };
 
   try {

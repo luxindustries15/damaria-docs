@@ -9,6 +9,8 @@ import {
   Printer,
   Send,
   Trash2,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import type { AppNotification, NotificationType } from '../types';
@@ -17,6 +19,12 @@ import {
   getNotificationPermission,
   requestDesktopNotificationPermission,
 } from '../utils/notifications';
+import {
+  isNotificationSoundEnabled,
+  playIphoneMessageTone,
+  setNotificationSoundEnabled,
+  unlockNotificationSound,
+} from '../utils/notificationSound';
 
 function NotificationIcon({ type }: { type: NotificationType }) {
   switch (type) {
@@ -50,6 +58,7 @@ export function NotificationBell({
   onMarkRead,
 }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
+  const [soundOn, setSoundOn] = useState(() => isNotificationSoundEnabled());
   const [perm, setPerm] = useState<NotificationPermission | 'unsupported'>(() =>
     getNotificationPermission()
   );
@@ -70,7 +79,34 @@ export function NotificationBell({
     return () => document.removeEventListener('mousedown', handleOutside);
   }, [open]);
 
+  // Automatically mark notifications as read when entering or keeping the notification section open
+  useEffect(() => {
+    if (open && unreadCount > 0) {
+      onMarkAllRead();
+    }
+  }, [open, unreadCount, onMarkAllRead]);
+
+  function handleToggleOpen() {
+    unlockNotificationSound();
+    const nextOpen = !open;
+    setOpen(nextOpen);
+    if (nextOpen && unreadCount > 0) {
+      onMarkAllRead();
+    }
+  }
+
+  function handleToggleSound() {
+    unlockNotificationSound();
+    const next = !soundOn;
+    setSoundOn(next);
+    setNotificationSoundEnabled(next);
+    if (next) {
+      playIphoneMessageTone(true);
+    }
+  }
+
   async function handleEnableAlerts() {
+    unlockNotificationSound();
     const next = await requestDesktopNotificationPermission();
     setPerm(next);
   }
@@ -79,8 +115,9 @@ export function NotificationBell({
     <div ref={containerRef} className="relative no-print">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggleOpen}
         aria-label={`Notifications (${unreadCount} unread)`}
+        aria-expanded={open}
         title="Notifications"
         className="relative p-2 rounded-xl bg-white/[0.07] hover:bg-white/[0.14] border border-white/15 text-slate-200 transition-colors"
       >
@@ -93,85 +130,122 @@ export function NotificationBell({
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-2xl glass-panel border border-white/15 shadow-2xl overflow-hidden z-50">
-          <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Bell className="w-4 h-4 text-sky-400" />
-              <h3 className="text-xs font-bold text-white">Action Notifications</h3>
-            </div>
+        <>
+          <div
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-[1px] sm:hidden z-40"
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
 
-            <div className="flex items-center gap-2">
-              {perm === 'default' && (
-                <button
-                  type="button"
-                  onClick={handleEnableAlerts}
-                  className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 inline-flex items-center gap-1 transition-colors"
-                >
-                  <BellRing className="w-3 h-3" />
-                  Desktop Alerts
-                </button>
-              )}
-              {unreadCount > 0 && (
-                <button
-                  type="button"
-                  onClick={onMarkAllRead}
-                  className="px-2 py-1 rounded-lg text-[11px] font-medium text-slate-300 hover:text-white hover:bg-white/10 inline-flex items-center gap-1 transition-colors"
-                >
-                  <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  Mark read
-                </button>
-              )}
-            </div>
-          </div>
-
-          {perm === 'granted' && (
-            <div className="px-4 py-1.5 bg-emerald-500/10 border-b border-emerald-400/20 text-[11px] text-emerald-200 flex items-center gap-1.5">
-              <BellRing className="w-3 h-3 text-emerald-400 shrink-0" />
-              <span>Desktop pop-up alerts are active</span>
-            </div>
-          )}
-
-          <div className="max-h-80 overflow-y-auto divide-y divide-white/[0.08]">
-            {notifications.length === 0 ? (
-              <div className="py-10 px-4 text-center text-xs text-slate-400">
-                No activity notifications yet. Notifications appear automatically when documents are
-                sent, printed, or updated.
+          <div className="fixed inset-x-3 top-[4.4rem] sm:inset-x-auto sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:w-96 rounded-2xl glass-panel border border-white/15 shadow-2xl overflow-hidden z-50">
+            <div className="px-3.5 sm:px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Bell className="w-4 h-4 text-sky-400 shrink-0" />
+                <h3 className="text-xs font-bold text-white truncate">Action Notifications</h3>
               </div>
-            ) : (
-              notifications.slice(0, 30).map((item) => {
-                const isUnread = !readIds.has(item.id);
-                return (
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleToggleSound}
+                  title={soundOn ? 'Notification tone on (click to mute)' : 'Notification tone muted'}
+                  aria-label={soundOn ? 'Mute notification tone' : 'Enable notification tone'}
+                  className={`p-1.5 rounded-lg border text-[11px] transition-colors ${
+                    soundOn
+                      ? 'bg-sky-500/15 border-sky-400/35 text-sky-200 hover:bg-sky-500/25'
+                      : 'bg-white/[0.05] border-white/10 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {soundOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                </button>
+
+                {perm === 'default' && (
                   <button
-                    key={item.id}
                     type="button"
-                    onClick={() => onMarkRead(item.id)}
-                    className={`w-full text-left px-4 py-3 flex items-start gap-3 transition-colors ${
-                      isUnread ? 'bg-sky-500/[0.08] hover:bg-sky-500/[0.12]' : 'hover:bg-white/[0.04]'
-                    }`}
+                    onClick={handleEnableAlerts}
+                    className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 inline-flex items-center gap-1 transition-colors whitespace-nowrap"
                   >
-                    <div className="mt-0.5">
-                      <NotificationIcon type={item.type} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-white truncate">
-                          {item.title}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400 whitespace-nowrap shrink-0">
-                          {formatTimeAgo(item.timestamp)}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-300 mt-0.5 leading-snug">{item.message}</p>
-                    </div>
-                    {isUnread && (
-                      <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0 mt-1.5" />
-                    )}
+                    <BellRing className="w-3 h-3" />
+                    <span className="hidden sm:inline">Desktop Alerts</span>
+                    <span className="sm:hidden">Alerts</span>
                   </button>
-                );
-              })
+                )}
+
+                {unreadCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={onMarkAllRead}
+                    className="px-2 py-1 rounded-lg text-[11px] font-medium text-slate-300 hover:text-white hover:bg-white/10 inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+                  >
+                    <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="hidden sm:inline">Mark read</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  aria-label="Close notifications"
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 sm:hidden"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {perm === 'granted' && (
+              <div className="px-4 py-1.5 bg-emerald-500/10 border-b border-emerald-400/20 text-[11px] text-emerald-200 flex items-center gap-1.5">
+                <BellRing className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span>Device pop-up alerts &amp; message chime active</span>
+              </div>
             )}
+
+            <div className="max-h-[60vh] sm:max-h-80 overflow-y-auto divide-y divide-white/[0.08]">
+              {notifications.length === 0 ? (
+                <div className="py-10 px-4 text-center text-xs text-slate-400">
+                  No activity notifications yet. Notifications appear automatically when documents
+                  are sent, printed, or updated.
+                </div>
+              ) : (
+                notifications.slice(0, 30).map((item) => {
+                  const isUnread = !readIds.has(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onMarkRead(item.id)}
+                      className={`w-full text-left px-4 py-3 flex items-start gap-3 transition-colors ${
+                        isUnread
+                          ? 'bg-sky-500/[0.08] hover:bg-sky-500/[0.12]'
+                          : 'hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      <div className="mt-0.5">
+                        <NotificationIcon type={item.type} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-white truncate">
+                            {item.title}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400 whitespace-nowrap shrink-0">
+                            {formatTimeAgo(item.timestamp)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-300 mt-0.5 leading-snug break-words">
+                          {item.message}
+                        </p>
+                      </div>
+                      {isUnread && (
+                        <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0 mt-1.5" />
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -187,7 +261,7 @@ export function NotificationToastStack({ toasts, onDismiss }: NotificationToastS
 
   return (
     <div
-      className="no-print fixed bottom-4 right-4 z-50 flex flex-col gap-2.5 w-[calc(100vw-2rem)] max-w-sm pointer-events-none"
+      className="no-print fixed bottom-3 left-3 right-3 sm:left-auto sm:bottom-4 sm:right-4 z-50 flex flex-col gap-2.5 sm:w-full sm:max-w-sm pointer-events-none"
       aria-live="polite"
     >
       <AnimatePresence>

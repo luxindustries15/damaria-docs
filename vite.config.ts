@@ -20,6 +20,7 @@ export default defineConfig(() => {
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'assets/aistudio/notification_o14egLP_9b380fa9.mp3',
         ],
         manifest: {
           id: '/',
@@ -59,8 +60,8 @@ export default defineConfig(() => {
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,ico,png,jpg,svg,woff,woff2,mjs}'],
-          globIgnores: ['assets/aistudio/**'],
+          globPatterns: ['**/*.{js,css,html,ico,png,jpg,svg,woff,woff2,mjs,mp3}'],
+          globIgnores: ['assets/aistudio/*.{png,jpg,jpeg,webp}'],
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
