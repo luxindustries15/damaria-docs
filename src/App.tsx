@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Eye, EyeOff, FileUp, Lock, Printer, ShieldCheck } from 'lucide-react';
 import { AdminDashboard, type AdminTab } from './components/AdminDashboard';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import { PrintablePacket } from './components/PrintablePacket';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import { TeacherPortal } from './components/TeacherPortal';
 import backdropImg from './assets/images/glass_ambient_backdrop_1794773699533.jpg';
 import schoolLogo from './assets/images/damaria_school_logo_rounded.png';
@@ -264,29 +266,32 @@ export default function App() {
               </button>
             </nav>
 
-            <button
-              type="button"
-              onClick={() =>
-                viewMode === 'send' ? openAdminSection('documents') : setViewMode('send')
-              }
-              className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              {viewMode === 'send' ? (
-                <>
-                  {adminUnlocked ? (
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                  ) : (
-                    <Lock className="w-3.5 h-3.5" />
-                  )}
-                  Admin Portal
-                </>
-              ) : (
-                <>
-                  <FileUp className="w-3.5 h-3.5" />
-                  Send Document
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2.5 shrink-0">
+              <PWAInstallButton />
+              <button
+                type="button"
+                onClick={() =>
+                  viewMode === 'send' ? openAdminSection('documents') : setViewMode('send')
+                }
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                {viewMode === 'send' ? (
+                  <>
+                    {adminUnlocked ? (
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                    ) : (
+                      <Lock className="w-3.5 h-3.5" />
+                    )}
+                    Admin Portal
+                  </>
+                ) : (
+                  <>
+                    <FileUp className="w-3.5 h-3.5" />
+                    Send Document
+                  </>
+                )}
+              </button>
+            </div>
           </header>
 
           {/* Compact Mobile Workspace Switcher */}
@@ -489,6 +494,8 @@ export default function App() {
           ) : null}
         </div>
       </div>
+
+      <OfflineIndicator />
 
       <PrintablePacket
         submission={printState?.submission ?? null}
