@@ -20,8 +20,11 @@ export async function getPdfPageCountFromFile(file: File): Promise<number | null
   }
 }
 
-export async function renderPdfFromUrl(url: string): Promise<RenderedPdfResult> {
-  const res = await fetch(url);
+export async function renderPdfFromUrl(
+  url: string,
+  headers?: HeadersInit
+): Promise<RenderedPdfResult> {
+  const res = await fetch(url, headers ? { headers } : undefined);
   if (!res.ok) {
     throw new Error(`Could not load PDF file (HTTP ${res.status}).`);
   }

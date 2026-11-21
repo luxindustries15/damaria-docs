@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
-  AlertTriangle,
   CheckCircle2,
   Clock,
   Download,
@@ -8,6 +7,7 @@ import {
   FileCheck2,
   FileText,
   Layers,
+  Lock,
   Minus,
   Plus,
   Printer,
@@ -31,6 +31,7 @@ import {
   downloadBridgeScript,
   downloadLogsCsv,
   downloadOriginalSubmission,
+  getAdminAuthHeaders,
   recordPrint,
   syncBridgeMachines,
   verifyPrinter,
@@ -55,6 +56,7 @@ interface AdminDashboardProps {
   data: BootstrapPayload;
   backendMode?: BackendMode;
   onRefresh: () => void;
+  onLockAdmin?: () => void;
   onTriggerPrint: (
     submission: ExamSubmission,
     copies: number,
@@ -66,9 +68,9 @@ const BROWSER_PRINTER_ID = 'browser-default';
 
 export function AdminDashboard({
   activeTab,
-  onChangeTab,
   data,
   onRefresh,
+  onLockAdmin,
   onTriggerPrint,
 }: AdminDashboardProps) {
   const [selectedId, setSelectedId] = useState<string>(data.submissions[0]?.id || '');
@@ -92,6 +94,9 @@ export function AdminDashboard({
   const [pdfPages, setPdfPages] = useState<string[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+
+  // Authenticated object URL for uploaded image previews & printing
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
 
   // Live client-side re-parse fallback for previously uploaded .doc files
   const [liveWordDoc, setLiveWordDoc] = useState<{
@@ -125,7 +130,7 @@ export function AdminDashboard({
     setPdfLoading(true);
     setPdfError(null);
     try {
-      const res = await renderPdfFromUrl(apiUrl(fileUrl));
+      const res = await renderPdfFromUrl(apiUrl(fileUrl), getAdminAuthHeaders());
       setPdfPages(res.pageImages);
     } catch (err) {
       setPdfPages([]);
@@ -139,6 +144,7 @@ export function AdminDashboard({
     if (!selectedDoc) {
       setPdfPages([]);
       setPdfError(null);
+      setImagePreviewUrl(null);
       setLiveWordDoc(null);
       setWordParsing(false);
       return;
@@ -151,10 +157,11 @@ export function AdminDashboard({
     setWordParsing(false);
 
     if (selectedDoc.fileType === 'pdf' && selectedDoc.fileUrl) {
+      setImagePreviewUrl(null);
       let active = true;
       setPdfLoading(true);
       setPdfError(null);
-      renderPdfFromUrl(apiUrl(selectedDoc.fileUrl))
+      renderPdfFromUrl(apiUrl(selectedDoc.fileUrl), getAdminAuthHeaders())
         .then((res) => {
           if (active) setPdfPages(res.pageImages);
         })
@@ -175,6 +182,35 @@ export function AdminDashboard({
     setPdfPages([]);
     setPdfError(null);
 
+    if (selectedDoc.fileMime?.startsWith('image/') && selectedDoc.fileUrl) {
+      if (selectedDoc.fileUrl.startsWith('blob:')) {
+        setImagePreviewUrl(selectedDoc.fileUrl);
+        return;
+      }
+      let active = true;
+      let createdObjectUrl: string | null = null;
+      setImagePreviewUrl(null);
+      fetch(apiUrl(selectedDoc.fileUrl), { headers: getAdminAuthHeaders() })
+        .then(async (res) => {
+          if (!res.ok) throw new Error('Could not load image');
+          return await res.blob();
+        })
+        .then((blob) => {
+          if (!active) return;
+          createdObjectUrl = URL.createObjectURL(blob);
+          setImagePreviewUrl(createdObjectUrl);
+        })
+        .catch(() => {
+          if (active) setImagePreviewUrl(null);
+        });
+      return () => {
+        active = false;
+        if (createdObjectUrl) URL.revokeObjectURL(createdObjectUrl);
+      };
+    }
+
+    setImagePreviewUrl(null);
+
     if (
       selectedDoc.fileType === 'word' &&
       selectedDoc.fileUrl &&
@@ -182,7 +218,7 @@ export function AdminDashboard({
     ) {
       let active = true;
       setWordParsing(true);
-      fetch(apiUrl(selectedDoc.fileUrl))
+      fetch(apiUrl(selectedDoc.fileUrl), { headers: getAdminAuthHeaders() })
         .then(async (res) => {
           if (!res.ok) throw new Error('Could not read file');
           const ab = await res.arrayBuffer();
@@ -210,7 +246,7 @@ export function AdminDashboard({
         active = false;
       };
     }
-  }, [selectedDoc?.id, selectedDoc?.fileUrl, selectedDoc?.renderedHtml]);
+  }, [selectedDoc?.id, selectedDoc?.fileUrl, selectedDoc?.renderedHtml, selectedDoc?.fileMime]);
 
   useEffect(() => {
     if (selectedPrinterId === BROWSER_PRINTER_ID) return;
@@ -340,16 +376,22 @@ export function AdminDashboard({
   }
 
   async function printWithBrowserDialog(doc: ExamSubmission, copies: number) {
-    // If a PDF didn't render to canvas images, try rendering once more or print via hidden iframe
+    // If a PDF didn't render to canvas images, try rendering once more or print via authenticated blob iframe
     let pagesToPrint = pdfPages;
     if (doc.fileType === 'pdf' && pagesToPrint.length === 0 && doc.fileUrl) {
       try {
-        const res = await renderPdfFromUrl(apiUrl(doc.fileUrl));
+        const res = await renderPdfFromUrl(apiUrl(doc.fileUrl), getAdminAuthHeaders());
         pagesToPrint = res.pageImages;
         setPdfPages(res.pageImages);
         setPdfError(null);
       } catch {
-        // Fall back to direct same-origin PDF iframe print
+        const fileRes = await fetch(apiUrl(doc.fileUrl), { headers: getAdminAuthHeaders() });
+        if (!fileRes.ok) {
+          throw new Error(
+            'Could not open PDF for printing in this browser. Use Download Original to print from your PDF viewer.'
+          );
+        }
+        const blobUrl = URL.createObjectURL(await fileRes.blob());
         const iframe = document.createElement('iframe');
         iframe.style.position = 'fixed';
         iframe.style.right = '0';
@@ -357,7 +399,7 @@ export function AdminDashboard({
         iframe.style.width = '0';
         iframe.style.height = '0';
         iframe.style.border = '0';
-        iframe.src = apiUrl(doc.fileUrl);
+        iframe.src = blobUrl;
         document.body.appendChild(iframe);
         await new Promise<void>((resolve) => {
           iframe.onload = () => resolve();
@@ -366,7 +408,10 @@ export function AdminDashboard({
         try {
           iframe.contentWindow?.focus();
           iframe.contentWindow?.print();
-          setTimeout(() => iframe.remove(), 60_000);
+          setTimeout(() => {
+            iframe.remove();
+            URL.revokeObjectURL(blobUrl);
+          }, 60_000);
           setAwaitingManualConfirmId(doc.id);
           setFeedback({
             type: 'ok',
@@ -375,6 +420,7 @@ export function AdminDashboard({
           return;
         } catch {
           iframe.remove();
+          URL.revokeObjectURL(blobUrl);
           throw new Error(
             'Could not open PDF for printing in this browser. Use Download Original to print from your PDF viewer.'
           );
@@ -382,10 +428,14 @@ export function AdminDashboard({
       }
     }
 
-    const resolvedDoc: ExamSubmission =
+    let resolvedDoc: ExamSubmission =
       liveWordDoc && liveWordDoc.id === doc.id
         ? { ...doc, renderedHtml: liveWordDoc.html, pageCount: liveWordDoc.pageCount }
         : doc;
+
+    if (doc.fileMime?.startsWith('image/') && imagePreviewUrl) {
+      resolvedDoc = { ...resolvedDoc, fileUrl: imagePreviewUrl };
+    }
 
     await onTriggerPrint(resolvedDoc, copies, pagesToPrint);
     setAwaitingManualConfirmId(doc.id);
@@ -428,6 +478,7 @@ export function AdminDashboard({
           fileName: selectedDoc.fileName,
           renderedHtml: effectiveWordHtml,
           title: selectedDoc.title,
+          authHeaders: getAdminAuthHeaders(),
         });
 
         if (bridgeRes.ok) {
@@ -609,6 +660,22 @@ export function AdminDashboard({
 
   return (
     <div className="space-y-6">
+      {onLockAdmin && (
+        <div className="flex items-center justify-between gap-3 px-1">
+          <p className="text-xs text-slate-400">
+            Admin Portal unlocked · Delete, print, and machine controls active
+          </p>
+          <button
+            type="button"
+            onClick={onLockAdmin}
+            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white/[0.07] hover:bg-white/[0.13] border border-white/10 text-slate-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+          >
+            <Lock className="w-3.5 h-3.5 text-sky-400" />
+            Lock Admin Portal
+          </button>
+        </div>
+      )}
+
       {/* Real Live Metrics Strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="glass-panel rounded-2xl p-5 flex items-start justify-between gap-3">
@@ -966,7 +1033,11 @@ export function AdminDashboard({
                     {selectedDoc.fileUrl && (
                       <button
                         type="button"
-                        onClick={() => downloadOriginalSubmission(selectedDoc)}
+                        onClick={() =>
+                          downloadOriginalSubmission(selectedDoc).catch((err) =>
+                            setFeedback({ type: 'err', text: (err as Error).message })
+                          )
+                        }
                         className="px-4 py-2.5 rounded-xl text-xs font-medium bg-white/10 hover:bg-white/15 text-slate-200 transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
                       >
                         <Download className="w-4 h-4" />
@@ -1058,12 +1129,16 @@ export function AdminDashboard({
                     )
                   ) : selectedDoc.fileMime?.startsWith('image/') && selectedDoc.fileUrl ? (
                     <div className="p-6 flex justify-center bg-slate-900/80">
-                      <img
-                        src={apiUrl(selectedDoc.fileUrl)}
-                        alt={selectedDoc.title}
-                        referrerPolicy="no-referrer"
-                        className="max-h-[380px] object-contain rounded shadow-lg bg-white"
-                      />
+                      {imagePreviewUrl ? (
+                        <img
+                          src={imagePreviewUrl}
+                          alt={selectedDoc.title}
+                          referrerPolicy="no-referrer"
+                          className="max-h-[380px] object-contain rounded shadow-lg bg-white"
+                        />
+                      ) : (
+                        <div className="py-12 text-xs text-slate-400">Loading image preview...</div>
+                      )}
                     </div>
                   ) : (
                     <div className="max-h-[500px] overflow-y-auto bg-slate-900/90 p-4 sm:p-6">
@@ -1316,7 +1391,11 @@ export function AdminDashboard({
             </span>
             <button
               type="button"
-              onClick={() => downloadBridgeScript()}
+              onClick={() =>
+                downloadBridgeScript().catch((err) =>
+                  setFeedback({ type: 'err', text: (err as Error).message })
+                )
+              }
               className="text-sky-300 hover:text-sky-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5" />
@@ -1365,7 +1444,11 @@ export function AdminDashboard({
 
                 <button
                   type="button"
-                  onClick={() => downloadLogsCsv()}
+                  onClick={() =>
+                    downloadLogsCsv().catch((err) =>
+                      setFeedback({ type: 'err', text: (err as Error).message })
+                    )
+                  }
                   className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
                 >
                   <Download className="w-3.5 h-3.5" />

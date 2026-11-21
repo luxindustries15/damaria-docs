@@ -1,4 +1,5 @@
-import express from 'express';
+import crypto from 'node:crypto';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import net from 'net';
@@ -6,6 +7,13 @@ import path from 'path';
 import multer from 'multer';
 import mammoth from 'mammoth';
 import { createServer as createViteServer } from 'vite';
+import {
+  createAdminToken,
+  extractBearerToken,
+  sanitizeBootstrapForPublic,
+  verifyAdminPassword,
+  verifyAdminToken,
+} from './adminAuth.ts';
 import { queryIppPrinter, sendIppPrintJob } from './src/utils/ipp.ts';
 import {
   isPlaceholderWordHtml,
@@ -481,6 +489,20 @@ const upload = multer({
 
 async function startServer() {
   const app = express();
+  const ADMIN_SESSION_SECRET =
+    process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+  function isAdminRequest(req: Request): boolean {
+    const token = extractBearerToken(req.headers.authorization);
+    return verifyAdminToken(token, ADMIN_SESSION_SECRET);
+  }
+
+  function requireAdmin(req: Request, res: Response, next: NextFunction) {
+    if (!isAdminRequest(req)) {
+      return res.status(401).json({ error: 'Admin authentication required.' });
+    }
+    next();
+  }
 
   const extraOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -511,22 +533,43 @@ async function startServer() {
   });
 
   app.use(express.json({ limit: '10mb' }));
-  app.use('/api/uploads', express.static(UPLOAD_DIR));
+  app.use('/api/uploads', requireAdmin, express.static(UPLOAD_DIR));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  app.get('/api/bootstrap', async (_req, res) => {
-    await reparseLegacyWordSubmissions();
-    res.json({
+  app.post('/api/admin/login', (req, res) => {
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!verifyAdminPassword(password)) {
+      return res.status(401).json({ error: 'Incorrect admin password.' });
+    }
+    const session = createAdminToken(ADMIN_SESSION_SECRET);
+    return res.json({ ok: true, ...session });
+  });
+
+  app.post('/api/admin/logout', (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/session', (req, res) => {
+    res.json({ authenticated: isAdminRequest(req) });
+  });
+
+  app.get('/api/bootstrap', async (req, res) => {
+    const admin = isAdminRequest(req);
+    if (admin) {
+      await reparseLegacyWordSubmissions();
+    }
+    const payload: BootstrapPayload = {
       ...store,
       publicDomain: 'https://damariadocs.com',
       liveAppUrl: process.env.APP_URL || '',
-    });
+    };
+    res.json(admin ? payload : sanitizeBootstrapForPublic(payload));
   });
 
-  app.get('/api/bridge/script', (_req, res) => {
+  app.get('/api/bridge/script', requireAdmin, (_req, res) => {
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="damaria-docs-bridge.mjs"');
     res.send(generateBridgeScript());
@@ -628,18 +671,20 @@ async function startServer() {
     }
   });
 
-  // Delete document
-  app.delete('/api/submissions/:id', async (req, res) => {
+  // Delete document (Admin only)
+  app.delete('/api/submissions/:id', requireAdmin, async (req, res) => {
     const idx = store.submissions.findIndex((s) => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Document not found.' });
 
     const [removed] = store.submissions.splice(idx, 1);
     if (removed.fileUrl) {
-      const localPath = path.join(UPLOAD_DIR, path.basename(removed.fileUrl));
-      try {
-        if (fs.existsSync(localPath)) await fsp.unlink(localPath);
-      } catch (err) {
-        console.error('Failed unlinking file:', err);
+      const localPath = path.resolve(UPLOAD_DIR, path.basename(removed.fileUrl));
+      if (localPath.startsWith(UPLOAD_DIR + path.sep)) {
+        try {
+          if (fs.existsSync(localPath)) await fsp.unlink(localPath);
+        } catch (err) {
+          console.error('Failed unlinking file:', err);
+        }
       }
     }
 
@@ -654,17 +699,19 @@ async function startServer() {
     res.json({ deleted: true, id: removed.id });
   });
 
-  // Download file
-  app.get('/api/submissions/:id/download', (req, res) => {
+  // Download file (Admin only)
+  app.get('/api/submissions/:id/download', requireAdmin, (req, res) => {
     const job = store.submissions.find((s) => s.id === req.params.id);
     if (!job || !job.fileUrl) return res.status(404).json({ error: 'File not found.' });
-    const localFile = path.join(UPLOAD_DIR, path.basename(job.fileUrl));
-    if (!fs.existsSync(localFile)) return res.status(404).json({ error: 'File missing.' });
+    const localFile = path.resolve(UPLOAD_DIR, path.basename(job.fileUrl));
+    if (!localFile.startsWith(UPLOAD_DIR + path.sep) || !fs.existsSync(localFile)) {
+      return res.status(404).json({ error: 'File missing.' });
+    }
     return res.download(localFile, job.fileName || path.basename(localFile));
   });
 
-  // Connect Printer or Photocopier (Digital OR Manual/USB)
-  app.post('/api/printers', async (req, res) => {
+  // Connect Printer or Photocopier (Admin only)
+  app.post('/api/printers', requireAdmin, async (req, res) => {
     const {
       name,
       deviceType,
@@ -807,8 +854,8 @@ async function startServer() {
     res.status(201).json(printer);
   });
 
-  // Sync currently paired USB devices on browser startup
-  app.post('/api/printers/usb-sync', (req, res) => {
+  // Sync currently paired USB devices on browser startup (Admin only)
+  app.post('/api/printers/usb-sync', requireAdmin, (req, res) => {
     const { pairedDevices } = req.body as {
       pairedDevices: Array<{ vendorId: number; productId: number; name?: string }>;
     };
@@ -834,8 +881,8 @@ async function startServer() {
     res.json({ updated });
   });
 
-  // Sync live USB hotplug event (plug / unplug) from browser WebUSB
-  app.post('/api/printers/usb-event', (req, res) => {
+  // Sync live USB hotplug event (Admin only)
+  app.post('/api/printers/usb-event', requireAdmin, (req, res) => {
     const { event, vendorId, productId, productName, manufacturer } = req.body as {
       event: 'connect' | 'disconnect';
       vendorId: number;
@@ -882,8 +929,8 @@ async function startServer() {
     res.json({ matched: true, printer: existing });
   });
 
-  // Sync machines reported by Local Print Bridge (http://127.0.0.1:4777)
-  app.post('/api/printers/sync-bridge', (req, res) => {
+  // Sync machines reported by Local Print Bridge (Admin only)
+  app.post('/api/printers/sync-bridge', requireAdmin, (req, res) => {
     const { machines } = req.body as {
       machines: Array<{
         name: string;
@@ -962,8 +1009,8 @@ async function startServer() {
     res.json({ printers: store.printers });
   });
 
-  // Verify digital or manual connection
-  app.post('/api/printers/:id/verify', async (req, res) => {
+  // Verify digital or manual connection (Admin only)
+  app.post('/api/printers/:id/verify', requireAdmin, async (req, res) => {
     const printer = store.printers.find((p) => p.id === req.params.id);
     if (!printer) return res.status(404).json({ error: 'Machine not found.' });
 
@@ -995,8 +1042,8 @@ async function startServer() {
     res.json(printer);
   });
 
-  // Update physical tray count or switch mode
-  app.patch('/api/printers/:id', async (req, res) => {
+  // Update physical tray count or switch mode (Admin only)
+  app.patch('/api/printers/:id', requireAdmin, async (req, res) => {
     const printer = store.printers.find((p) => p.id === req.params.id);
     if (!printer) return res.status(404).json({ error: 'Machine not found.' });
 
@@ -1043,7 +1090,7 @@ async function startServer() {
     res.json(printer);
   });
 
-  app.delete('/api/printers/:id', (req, res) => {
+  app.delete('/api/printers/:id', requireAdmin, (req, res) => {
     const idx = store.printers.findIndex((p) => p.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Machine not found.' });
     const [removed] = store.printers.splice(idx, 1);
@@ -1057,8 +1104,8 @@ async function startServer() {
     res.json({ deleted: true });
   });
 
-  // Execute real print (Digital TCP/IPP OR record Manual / Browser / Bridge print)
-  app.post('/api/submissions/:id/print', async (req, res) => {
+  // Execute real print (Admin only)
+  app.post('/api/submissions/:id/print', requireAdmin, async (req, res) => {
     const job = store.submissions.find((s) => s.id === req.params.id);
     if (!job) return res.status(404).json({ error: 'Document not found.' });
 
@@ -1195,7 +1242,7 @@ async function startServer() {
     res.json({ job, printer });
   });
 
-  app.get('/api/logs/export', (_req, res) => {
+  app.get('/api/logs/export', requireAdmin, (_req, res) => {
     const header = ['Timestamp', 'Actor', 'Action', 'Document', 'Sender', 'Machine', 'Mode', 'Copies', 'Sheets', 'Details'];
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = store.logs.map((l) =>

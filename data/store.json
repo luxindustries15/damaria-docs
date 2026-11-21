@@ -56,6 +56,37 @@
   ],
   "logs": [
     {
+      "id": "log_mwq5yged_f9i2",
+      "timestamp": "2026-11-21T08:46:11.077Z",
+      "actorName": "Admin Print Desk",
+      "action": "DOCUMENT_DELETED",
+      "examTitle": "Auth Integration Check",
+      "senderName": "Auth Test Teacher",
+      "details": "Deleted \"Auth Integration Check\" (test-auth.txt)."
+    },
+    {
+      "id": "log_mwq5ygcx_vcv5",
+      "timestamp": "2026-11-21T08:46:11.025Z",
+      "actorName": "Admin Print Desk",
+      "action": "PRINT_COMPLETED",
+      "examTitle": "Auth Integration Check",
+      "senderName": "Auth Test Teacher",
+      "printerName": "This Device (Browser Print)",
+      "printMode": "manual",
+      "copiesProduced": 2,
+      "sheetsUsed": 2,
+      "details": "Printed 2 copies (2 A4 sheets) via This Device."
+    },
+    {
+      "id": "log_mwq5yg6c_rfdo",
+      "timestamp": "2026-11-21T08:46:10.788Z",
+      "actorName": "Auth Test Teacher",
+      "action": "DOCUMENT_SENT",
+      "examTitle": "Auth Integration Check",
+      "senderName": "Auth Test Teacher",
+      "details": "Sent test-auth.txt (5 copies, 1p, A4)."
+    },
+    {
       "id": "log_mwp898y0_afp7",
       "timestamp": "2026-11-20T17:02:47.688Z",
       "actorName": "Admin Print Desk",

@@ -245,7 +245,8 @@ export async function tryRawWebUsbPrint(
   usbInfo: UsbHardwareInfo | undefined,
   fileUrl: string | null,
   fallbackText: string,
-  copies: number
+  copies: number,
+  authHeaders?: HeadersInit
 ): Promise<{ sentRaw: boolean; note: string }> {
   if (!usbInfo?.vendorId || !usbInfo?.productId) {
     return { sentRaw: false, note: 'Using browser print spooler.' };
@@ -276,7 +277,10 @@ export async function tryRawWebUsbPrint(
 
     let payloadBytes: Uint8Array;
     if (fileUrl) {
-      const res = await fetch(apiUrl(fileUrl));
+      const res = await fetch(
+        apiUrl(fileUrl),
+        authHeaders ? { headers: authHeaders } : undefined
+      );
       const buf = await res.arrayBuffer();
       payloadBytes = new Uint8Array(buf);
     } else {
@@ -348,11 +352,15 @@ export async function printViaLocalBridge(params: {
   fileName: string | null;
   renderedHtml: string;
   title: string;
+  authHeaders?: HeadersInit;
 }): Promise<{ ok: boolean; message: string }> {
   try {
     let fileBase64: string | null = null;
     if (params.fileUrl) {
-      const fileRes = await fetch(apiUrl(params.fileUrl));
+      const fileRes = await fetch(
+        apiUrl(params.fileUrl),
+        params.authHeaders ? { headers: params.authHeaders } : undefined
+      );
       if (fileRes.ok) {
         const buf = await fileRes.arrayBuffer();
         const bytes = new Uint8Array(buf);

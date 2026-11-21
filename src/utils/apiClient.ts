@@ -15,12 +15,16 @@ import {
   browserExportLogsCsv,
   browserHandleUsbEvent,
   browserHasLocalData,
+  browserLoginAdmin,
+  browserLogoutAdmin,
   browserRecordPrint,
   browserSubmitDocument,
   browserSyncBridgeMachines,
   browserSyncUsbDevices,
   browserUpdatePrinter,
   browserVerifyPrinter,
+  isBrowserAdminAuthenticated,
+  triggerBrowserDownload,
   type AddPrinterBody,
 } from './browserStore';
 
@@ -28,21 +32,63 @@ export type BackendMode = 'server' | 'browser';
 
 let currentMode: BackendMode = 'server';
 let serverChecked = false;
+let adminToken: string | null = null;
+let adminExpiresAt = 0;
 
 export function getBackendMode(): BackendMode {
   return currentMode;
+}
+
+export function isAdminLoggedIn(): boolean {
+  if (currentMode === 'browser') {
+    return isBrowserAdminAuthenticated();
+  }
+  return Boolean(adminToken && Date.now() < adminExpiresAt);
+}
+
+export function getAdminAuthHeaders(): Record<string, string> {
+  if (adminToken && Date.now() < adminExpiresAt) {
+    return { Authorization: `Bearer ${adminToken}` };
+  }
+  return {};
+}
+
+function clearMemorySession() {
+  adminToken = null;
+  adminExpiresAt = 0;
+  browserLogoutAdmin();
+}
+
+function isFallbackNetworkError(err: unknown): boolean {
+  const msg = (err as Error)?.message || '';
+  return (
+    msg === 'NON_JSON_RESPONSE' ||
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('AbortError')
+  );
 }
 
 async function fetchJsonWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const mergedHeaders = new Headers(init?.headers || {});
+    const authHeaders = getAdminAuthHeaders();
+    if (authHeaders.Authorization && !mergedHeaders.has('Authorization')) {
+      mergedHeaders.set('Authorization', authHeaders.Authorization);
+    }
+
+    const res = await fetch(url, { ...init, headers: mergedHeaders, signal: controller.signal });
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
       throw new Error('NON_JSON_RESPONSE');
     }
     const json = await res.json();
+    if (res.status === 401) {
+      clearMemorySession();
+      throw new Error((json as { error?: string }).error || 'Admin authentication required.');
+    }
     if (!res.ok) {
       throw new Error((json as { error?: string }).error || `HTTP ${res.status}`);
     }
@@ -52,13 +98,64 @@ async function fetchJsonWithTimeout(url: string, init?: RequestInit, timeoutMs =
   }
 }
 
+export async function loginAdmin(password: string): Promise<void> {
+  if (currentMode === 'browser') {
+    await browserLoginAdmin(password);
+    return;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let res: Response;
+    try {
+      res = await fetch(apiUrl('/api/admin/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('NON_JSON_RESPONSE');
+    }
+    const json = (await res.json()) as { token?: string; expiresAt?: number; error?: string };
+    if (!res.ok) {
+      throw new Error(json.error || 'Incorrect admin password.');
+    }
+    if (!json.token || !json.expiresAt) {
+      throw new Error('Invalid authentication response.');
+    }
+    adminToken = json.token;
+    adminExpiresAt = json.expiresAt;
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      currentMode = 'browser';
+      serverChecked = true;
+      await browserLoginAdmin(password);
+      return;
+    }
+    throw err;
+  }
+}
+
+export async function logoutAdmin(): Promise<void> {
+  clearMemorySession();
+  if (currentMode === 'server') {
+    await fetch(apiUrl('/api/admin/logout'), { method: 'POST' }).catch(() => undefined);
+  }
+}
+
 export async function loadBootstrap(): Promise<{
   payload: BootstrapPayload;
   mode: BackendMode;
 }> {
   const hasLocal = await browserHasLocalData();
 
-  // If we already fell back to browser mode and the user saved local data, stay consistent
   if (serverChecked && currentMode === 'browser' && hasLocal) {
     return { payload: await browserBootstrap(), mode: 'browser' };
   }
@@ -95,13 +192,7 @@ export async function submitDocument(formData: FormData): Promise<ExamSubmission
     if (!res.ok) throw new Error((json as { error?: string }).error || 'Could not send file.');
     return json as ExamSubmission;
   } catch (err) {
-    const msg = (err as Error).message;
-    if (
-      msg === 'NON_JSON_RESPONSE' ||
-      msg.includes('Failed to fetch') ||
-      msg.includes('NetworkError') ||
-      msg.includes('AbortError')
-    ) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserSubmitDocument(formData);
     }
@@ -116,8 +207,7 @@ export async function deleteSubmission(id: string): Promise<void> {
   try {
     await fetchJsonWithTimeout(apiUrl(`/api/submissions/${id}`), { method: 'DELETE' });
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserDeleteSubmission(id);
     }
@@ -139,8 +229,7 @@ export async function recordPrint(
       body: JSON.stringify(payload),
     })) as { job: ExamSubmission; printer: PrinterDevice | null };
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserRecordPrint(id, payload);
     }
@@ -159,8 +248,7 @@ export async function addOrUpdatePrinter(body: AddPrinterBody): Promise<PrinterD
       body: JSON.stringify(body),
     })) as PrinterDevice;
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserAddPrinter(body);
     }
@@ -177,8 +265,7 @@ export async function verifyPrinter(id: string): Promise<PrinterDevice> {
       method: 'POST',
     })) as PrinterDevice;
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserVerifyPrinter(id);
     }
@@ -205,8 +292,7 @@ export async function updatePrinter(
       body: JSON.stringify(patch),
     })) as PrinterDevice;
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserUpdatePrinter(id, patch);
     }
@@ -221,8 +307,7 @@ export async function deletePrinter(id: string): Promise<void> {
   try {
     await fetchJsonWithTimeout(apiUrl(`/api/printers/${id}`), { method: 'DELETE' });
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg === 'NON_JSON_RESPONSE' || msg.includes('Failed to fetch')) {
+    if (isFallbackNetworkError(err)) {
       currentMode = 'browser';
       return browserDeletePrinter(id);
     }
@@ -233,6 +318,7 @@ export async function deletePrinter(id: string): Promise<void> {
 export async function syncUsbDevices(
   pairedDevices: Array<{ vendorId: number; productId: number; name?: string }>
 ): Promise<void> {
+  if (!isAdminLoggedIn()) return;
   if (currentMode === 'browser') {
     return browserSyncUsbDevices(pairedDevices);
   }
@@ -242,8 +328,10 @@ export async function syncUsbDevices(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pairedDevices }),
     });
-  } catch {
-    await browserSyncUsbDevices(pairedDevices);
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      await browserSyncUsbDevices(pairedDevices);
+    }
   }
 }
 
@@ -254,6 +342,7 @@ export async function sendUsbEvent(payload: {
   productName?: string;
   manufacturer?: string;
 }): Promise<void> {
+  if (!isAdminLoggedIn()) return;
   if (currentMode === 'browser') {
     return browserHandleUsbEvent(payload);
   }
@@ -263,8 +352,10 @@ export async function sendUsbEvent(payload: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch {
-    await browserHandleUsbEvent(payload);
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      await browserHandleUsbEvent(payload);
+    }
   }
 }
 
@@ -280,6 +371,7 @@ export async function syncBridgeMachines(
     paperState: string;
   }>
 ): Promise<void> {
+  if (!isAdminLoggedIn()) return;
   if (currentMode === 'browser') {
     return browserSyncBridgeMachines(machines);
   }
@@ -289,8 +381,10 @@ export async function syncBridgeMachines(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ machines }),
     });
-  } catch {
-    await browserSyncBridgeMachines(machines);
+  } catch (err) {
+    if (isFallbackNetworkError(err)) {
+      await browserSyncBridgeMachines(machines);
+    }
   }
 }
 
@@ -298,36 +392,53 @@ export async function downloadOriginalSubmission(submission: ExamSubmission): Pr
   if (currentMode === 'browser' || submission.fileUrl?.startsWith('blob:')) {
     return browserDownloadOriginal(submission);
   }
-  const url = apiUrl(`/api/submissions/${submission.id}/download`);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = submission.fileName || `${submission.title}.bin`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const res = await fetch(apiUrl(`/api/submissions/${submission.id}/download`), {
+    headers: getAdminAuthHeaders(),
+  });
+  if (res.status === 401) {
+    clearMemorySession();
+    throw new Error('Admin authentication required.');
+  }
+  if (!res.ok) {
+    throw new Error('Could not download original file.');
+  }
+  const blob = await res.blob();
+  triggerBrowserDownload(blob, submission.fileName || `${submission.title}.bin`);
 }
 
 export async function downloadLogsCsv(): Promise<void> {
   if (currentMode === 'browser') {
     return browserExportLogsCsv();
   }
-  const a = document.createElement('a');
-  a.href = apiUrl('/api/logs/export');
-  a.download = 'print-history.csv';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const res = await fetch(apiUrl('/api/logs/export'), {
+    headers: getAdminAuthHeaders(),
+  });
+  if (res.status === 401) {
+    clearMemorySession();
+    throw new Error('Admin authentication required.');
+  }
+  if (!res.ok) {
+    throw new Error('Could not export logs.');
+  }
+  const blob = await res.blob();
+  triggerBrowserDownload(blob, 'print-history.csv');
 }
 
-export function downloadBridgeScript(): void {
+export async function downloadBridgeScript(): Promise<void> {
   if (currentMode === 'browser') {
     browserDownloadBridgeScript();
     return;
   }
-  const a = document.createElement('a');
-  a.href = apiUrl('/api/bridge/script');
-  a.download = 'damaria-docs-bridge.mjs';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const res = await fetch(apiUrl('/api/bridge/script'), {
+    headers: getAdminAuthHeaders(),
+  });
+  if (res.status === 401) {
+    clearMemorySession();
+    throw new Error('Admin authentication required.');
+  }
+  if (!res.ok) {
+    throw new Error('Could not download bridge script.');
+  }
+  const blob = await res.blob();
+  triggerBrowserDownload(blob, 'damaria-docs-bridge.mjs');
 }

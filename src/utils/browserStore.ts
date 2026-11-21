@@ -20,6 +20,39 @@ const STORE_STATE = 'state';
 const STORE_FILES = 'files';
 const STATE_KEY = 'bootstrap';
 const LS_FALLBACK_KEY = 'damaria_docs_store_v4';
+const BROWSER_PASS_DIGEST =
+  '4c947c2505c5f62a5242f6b544317cf035d61e6d53f11e6c312d4d6ca00142ae';
+const BROWSER_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+
+let browserAdminExpiresAt = 0;
+
+export function isBrowserAdminAuthenticated(): boolean {
+  return browserAdminExpiresAt > Date.now();
+}
+
+export async function browserLoginAdmin(password: string): Promise<{ ok: true; expiresAt: number }> {
+  if (!password) throw new Error('Incorrect admin password.');
+  const data = new TextEncoder().encode(`damaria-docs-admin-v1:${password}`);
+  const digestBuf = await crypto.subtle.digest('SHA-256', data);
+  const digestHex = Array.from(new Uint8Array(digestBuf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  if (digestHex !== BROWSER_PASS_DIGEST) {
+    throw new Error('Incorrect admin password.');
+  }
+  browserAdminExpiresAt = Date.now() + BROWSER_SESSION_TTL_MS;
+  return { ok: true, expiresAt: browserAdminExpiresAt };
+}
+
+export function browserLogoutAdmin(): void {
+  browserAdminExpiresAt = 0;
+}
+
+function requireBrowserAdmin(): void {
+  if (!isBrowserAdminAuthenticated()) {
+    throw new Error('Admin authentication required.');
+  }
+}
 
 interface StoredFileRecord {
   key: string;
@@ -226,6 +259,27 @@ export async function browserHasLocalData(): Promise<boolean> {
 
 export async function browserBootstrap(): Promise<BootstrapPayload> {
   const store = await idbGetState();
+  const isAdmin = isBrowserAdminAuthenticated();
+  const liveAppUrl =
+    typeof window !== 'undefined' ? window.location.origin : 'https://damariadocs.com';
+
+  if (!isAdmin) {
+    return {
+      schemaVersion: store.schemaVersion,
+      schoolName: store.schoolName,
+      printers: [],
+      logs: [],
+      submissions: store.submissions.map((sub) => ({
+        ...sub,
+        fileUrl: null,
+        renderedHtml: '',
+        notes: '',
+      })),
+      publicDomain: 'https://damariadocs.com',
+      liveAppUrl,
+    };
+  }
+
   let updatedLegacy = false;
 
   const hydratedSubmissions = await Promise.all(
@@ -263,7 +317,7 @@ export async function browserBootstrap(): Promise<BootstrapPayload> {
     ...store,
     submissions: hydratedSubmissions,
     publicDomain: 'https://damariadocs.com',
-    liveAppUrl: typeof window !== 'undefined' ? window.location.origin : 'https://damariadocs.com',
+    liveAppUrl,
   };
 }
 
@@ -371,6 +425,7 @@ export async function browserSubmitDocument(formData: FormData): Promise<ExamSub
 }
 
 export async function browserDeleteSubmission(id: string): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const idx = store.submissions.findIndex((s) => s.id === id);
   if (idx === -1) throw new Error('Document not found.');
@@ -392,6 +447,7 @@ export async function browserRecordPrint(
   id: string,
   payload: { printerId: string; copies?: number; bridgeAlreadySent?: boolean }
 ): Promise<{ job: ExamSubmission; printer: PrinterDevice | null }> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const job = store.submissions.find((s) => s.id === id);
   if (!job) throw new Error('Document not found.');
@@ -482,6 +538,7 @@ export interface AddPrinterBody {
 }
 
 export async function browserAddPrinter(body: AddPrinterBody): Promise<PrinterDevice> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const mode: PrinterConnectionMode = body.connectionMode === 'manual' ? 'manual' : 'digital';
   const dType: DeviceType = body.deviceType === 'photocopier' ? 'photocopier' : 'printer';
@@ -580,6 +637,7 @@ export async function browserAddPrinter(body: AddPrinterBody): Promise<PrinterDe
 }
 
 export async function browserVerifyPrinter(id: string): Promise<PrinterDevice> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const printer = store.printers.find((p) => p.id === id);
   if (!printer) throw new Error('Machine not found.');
@@ -597,6 +655,7 @@ export async function browserUpdatePrinter(
     status?: PrinterDevice['status'];
   }
 ): Promise<PrinterDevice> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const printer = store.printers.find((p) => p.id === id);
   if (!printer) throw new Error('Machine not found.');
@@ -638,6 +697,7 @@ export async function browserUpdatePrinter(
 }
 
 export async function browserDeletePrinter(id: string): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const idx = store.printers.findIndex((p) => p.id === id);
   if (idx === -1) throw new Error('Machine not found.');
@@ -654,6 +714,7 @@ export async function browserDeletePrinter(id: string): Promise<void> {
 export async function browserSyncUsbDevices(
   pairedDevices: Array<{ vendorId: number; productId: number; name?: string }>
 ): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   let updated = 0;
   for (const printer of store.printers) {
@@ -683,6 +744,7 @@ export async function browserHandleUsbEvent(payload: {
   productName?: string;
   manufacturer?: string;
 }): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const existing = store.printers.find(
     (p) => p.usbInfo?.vendorId === payload.vendorId && p.usbInfo?.productId === payload.productId
@@ -729,6 +791,7 @@ export async function browserSyncBridgeMachines(
     paperState: string;
   }>
 ): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const nowIso = new Date().toISOString();
   for (const m of machines) {
@@ -805,6 +868,7 @@ export function triggerBrowserDownload(blob: Blob, filename: string): void {
 }
 
 export async function browserDownloadOriginal(submission: ExamSubmission): Promise<void> {
+  requireBrowserAdmin();
   if (!submission.fileUrl) return;
   const res = await fetch(submission.fileUrl);
   const blob = await res.blob();
@@ -812,6 +876,7 @@ export async function browserDownloadOriginal(submission: ExamSubmission): Promi
 }
 
 export async function browserExportLogsCsv(): Promise<void> {
+  requireBrowserAdmin();
   const store = await idbGetState();
   const header = [
     'Timestamp',
@@ -847,6 +912,7 @@ export async function browserExportLogsCsv(): Promise<void> {
 }
 
 export function browserDownloadBridgeScript(): void {
+  requireBrowserAdmin();
   triggerBrowserDownload(
     new Blob([BRIDGE_SCRIPT_SOURCE], { type: 'application/javascript;charset=utf-8' }),
     'damaria-docs-bridge.mjs'

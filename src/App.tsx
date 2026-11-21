@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { FileUp, Printer } from 'lucide-react';
+import { Eye, EyeOff, FileUp, Lock, Printer, ShieldCheck } from 'lucide-react';
 import { AdminDashboard, type AdminTab } from './components/AdminDashboard';
 import { PrintablePacket } from './components/PrintablePacket';
 import { TeacherPortal } from './components/TeacherPortal';
@@ -8,7 +8,10 @@ import backdropImg from './assets/images/glass_ambient_backdrop_1794773699533.jp
 import schoolLogo from './assets/images/damaria_school_logo_rounded.png';
 import type { BootstrapPayload, ExamSubmission } from './types';
 import {
+  isAdminLoggedIn,
   loadBootstrap,
+  loginAdmin,
+  logoutAdmin,
   sendUsbEvent,
   syncUsbDevices,
   type BackendMode,
@@ -26,6 +29,11 @@ export default function App() {
   const [error, setError] = useState('');
   const [viewMode, setViewMode] = useState<'send' | 'admin'>('send');
   const [adminTab, setAdminTab] = useState<AdminTab>('documents');
+  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
   const [logoFailed, setLogoFailed] = useState(false);
   const [printState, setPrintState] = useState<{
     submission: ExamSubmission;
@@ -38,6 +46,7 @@ export default function App() {
       const { payload, mode } = await loadBootstrap();
       setData(payload);
       setBackendMode(mode);
+      setAdminUnlocked(isAdminLoggedIn());
       setError('');
     } catch (err) {
       setError((err as Error).message);
@@ -55,8 +64,10 @@ export default function App() {
     return () => clearInterval(timer);
   }, [fetchBootstrap]);
 
-  // Sync paired USB devices on startup and listen for live USB plug / unplug
+  // Sync paired USB devices only after Admin Portal is unlocked
   useEffect(() => {
+    if (!adminUnlocked) return;
+
     getPairedUsbDevices().then(async (devices) => {
       if (devices.length === 0) return;
       await syncUsbDevices(
@@ -92,7 +103,37 @@ export default function App() {
       }
     );
     return unsubscribe;
-  }, [fetchBootstrap]);
+  }, [adminUnlocked, fetchBootstrap]);
+
+  async function handleAdminLogin(e: FormEvent) {
+    e.preventDefault();
+    if (!adminPassword.trim()) {
+      setAuthError('Please enter the admin password.');
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      await loginAdmin(adminPassword);
+      setAdminUnlocked(true);
+      setAdminPassword('');
+      setShowPassword(false);
+      await fetchBootstrap();
+    } catch (err) {
+      setAuthError((err as Error).message || 'Incorrect admin password.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLockAdmin() {
+    await logoutAdmin();
+    setAdminUnlocked(false);
+    setAdminPassword('');
+    setAuthError('');
+    setViewMode('send');
+    await fetchBootstrap();
+  }
 
   async function handleTriggerPrint(
     submission: ExamSubmission,
@@ -101,7 +142,6 @@ export default function App() {
   ) {
     setPrintState({ submission, copies, pdfPageImages });
 
-    // Wait for React to render the .print-only container into the DOM
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
     );
@@ -137,6 +177,7 @@ export default function App() {
   }
 
   function openAdminSection(tab: AdminTab) {
+    setAuthError('');
     setViewMode('admin');
     setAdminTab(tab);
   }
@@ -232,8 +273,12 @@ export default function App() {
             >
               {viewMode === 'send' ? (
                 <>
-                  <Printer className="w-3.5 h-3.5" />
-                  Print Desk
+                  {adminUnlocked ? (
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5" />
+                  )}
+                  Admin Portal
                 </>
               ) : (
                 <>
@@ -324,6 +369,103 @@ export default function App() {
                     onRefresh={fetchBootstrap}
                   />
                 </motion.div>
+              ) : !adminUnlocked ? (
+                <motion.div
+                  key="admin-lock"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                  className="max-w-md mx-auto py-8 sm:py-12"
+                >
+                  <form
+                    onSubmit={handleAdminLogin}
+                    className="glass-panel rounded-2xl p-6 sm:p-8 space-y-5"
+                  >
+                    <div className="flex flex-col items-center text-center space-y-3">
+                      {logoFailed ? (
+                        <div className="w-14 h-14 rounded-2xl bg-[#060a13] border border-white/15 flex items-center justify-center text-sky-400">
+                          <Lock className="w-6 h-6" />
+                        </div>
+                      ) : (
+                        <img
+                          src={schoolLogo}
+                          alt="Damaria Pre & Primary School"
+                          referrerPolicy="no-referrer"
+                          className="w-16 h-16 rounded-2xl object-contain"
+                        />
+                      )}
+                      <div>
+                        <h1 className="text-xl font-bold text-white">Admin Portal</h1>
+                        <p className="text-xs text-slate-300 mt-1">
+                          Enter the admin password to print, delete documents, or manage machines.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="admin-password-input"
+                        className="block text-xs font-medium text-slate-300"
+                      >
+                        Admin Password
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="admin-password-input"
+                          type={showPassword ? 'text' : 'password'}
+                          autoFocus
+                          autoComplete="current-password"
+                          required
+                          value={adminPassword}
+                          onChange={(e) => {
+                            setAdminPassword(e.target.value);
+                            if (authError) setAuthError('');
+                          }}
+                          placeholder="Enter admin password"
+                          className="glass-input w-full rounded-xl pl-4 pr-10 py-2.5 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((v) => !v)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+                        >
+                          {showPassword ? (
+                            <EyeOff className="w-4 h-4" />
+                          ) : (
+                            <Eye className="w-4 h-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {authError && (
+                      <div className="rounded-xl px-3.5 py-2.5 text-xs font-medium bg-rose-500/12 border border-rose-400/35 text-rose-200">
+                        {authError}
+                      </div>
+                    )}
+
+                    <div className="space-y-2.5 pt-1">
+                      <button
+                        type="submit"
+                        disabled={authBusy}
+                        className="w-full px-5 py-2.5 rounded-xl text-sm font-semibold bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 transition-colors inline-flex items-center justify-center gap-2"
+                      >
+                        <Lock className="w-4 h-4" />
+                        {authBusy ? 'Verifying...' : 'Unlock Admin Portal'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('send')}
+                        className="w-full px-4 py-2 rounded-xl text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white transition-colors"
+                      >
+                        Back to Send File
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
               ) : (
                 <motion.div
                   key={`admin-${adminTab}`}
@@ -338,6 +480,7 @@ export default function App() {
                     data={data}
                     backendMode={backendMode}
                     onRefresh={fetchBootstrap}
+                    onLockAdmin={handleLockAdmin}
                     onTriggerPrint={handleTriggerPrint}
                   />
                 </motion.div>

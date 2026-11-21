@@ -1,9 +1,17 @@
 import { getStore } from '@netlify/blobs';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import mammoth from 'mammoth';
+import {
+  createAdminToken,
+  extractBearerToken,
+  sanitizeBootstrapForPublic,
+  verifyAdminPassword,
+  verifyAdminToken,
+} from '../../adminAuth';
 import { queryIppPrinter, sendIppPrintJob } from '../../src/utils/ipp';
 import {
   isPlaceholderWordHtml,
@@ -61,22 +69,79 @@ function createEmptyStore(): BootstrapPayload {
   };
 }
 
-function corsHeaders(): Record<string, string> {
-  return {
-    'Access-Control-Allow-Origin': '*',
+const TMP_SECRET_PATH = path.join(TMP_ROOT, 'session.secret');
+
+function corsHeaders(req?: Request): Record<string, string> {
+  const base: Record<string, string> = {
     'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
+  if (!req) return base;
+  const origin = req.headers.get('origin');
+  if (!origin) return base;
+
+  const reqOrigin = new URL(req.url).origin;
+  const extraOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const isAllowed =
+    origin === reqOrigin ||
+    origin === 'https://damariadocs.com' ||
+    origin === 'https://www.damariadocs.com' ||
+    /^https:\/\/[a-z0-9-]+\.netlify\.app$/i.test(origin) ||
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ||
+    extraOrigins.includes(origin);
+
+  if (isAllowed) {
+    base['Access-Control-Allow-Origin'] = origin;
+    base['Vary'] = 'Origin';
+  }
+  return base;
 }
 
-function jsonResponse(data: unknown, status = 200): Response {
+function jsonResponse(data: unknown, status = 200, req?: Request): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      ...corsHeaders(),
+      ...corsHeaders(req),
     },
   });
+}
+
+async function getSessionSecret(): Promise<string> {
+  const envSecret = process.env.ADMIN_SESSION_SECRET;
+  if (envSecret && envSecret.length >= 16) return envSecret;
+
+  const blobs = getBlobStoreSafe();
+  if (blobs) {
+    try {
+      const existing = await blobs.get('_system/admin_session_secret', { type: 'text' });
+      if (existing && typeof existing === 'string' && existing.length >= 32) {
+        return existing;
+      }
+      const created = crypto.randomBytes(32).toString('hex');
+      await blobs.set('_system/admin_session_secret', created);
+      return created;
+    } catch {
+      // fall through to /tmp secret
+    }
+  }
+
+  try {
+    if (fs.existsSync(TMP_SECRET_PATH)) {
+      const existing = (await fsp.readFile(TMP_SECRET_PATH, 'utf-8')).trim();
+      if (existing.length >= 32) return existing;
+    }
+    await fsp.mkdir(TMP_ROOT, { recursive: true });
+    const created = crypto.randomBytes(32).toString('hex');
+    await fsp.writeFile(TMP_SECRET_PATH, created, 'utf-8');
+    return created;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
 }
 
 function getBlobStoreSafe() {
@@ -549,7 +614,7 @@ server.listen(PORT, '127.0.0.1', () => {
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders() });
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
   }
 
   const url = new URL(req.url);
@@ -560,17 +625,53 @@ export default async function handler(req: Request): Promise<Response> {
 
   // GET /api/health
   if (req.method === 'GET' && routePath === '/health') {
-    return jsonResponse({ ok: true, runtime: 'netlify', timestamp: new Date().toISOString() });
+    return jsonResponse(
+      { ok: true, runtime: 'netlify', timestamp: new Date().toISOString() },
+      200,
+      req
+    );
   }
 
-  // GET /api/bridge/script
+  const sessionSecret = await getSessionSecret();
+  const isAdmin = verifyAdminToken(
+    extractBearerToken(req.headers.get('authorization')),
+    sessionSecret
+  );
+
+  // POST /api/admin/login
+  if (req.method === 'POST' && routePath === '/admin/login') {
+    try {
+      const body = (await req.json()) as { password?: unknown };
+      const password = typeof body?.password === 'string' ? body.password : '';
+      if (!verifyAdminPassword(password)) {
+        return jsonResponse({ error: 'Incorrect admin password.' }, 401, req);
+      }
+      const session = createAdminToken(sessionSecret);
+      return jsonResponse({ ok: true, ...session }, 200, req);
+    } catch {
+      return jsonResponse({ error: 'Invalid login request.' }, 400, req);
+    }
+  }
+
+  // POST /api/admin/logout
+  if (req.method === 'POST' && routePath === '/admin/logout') {
+    return jsonResponse({ ok: true }, 200, req);
+  }
+
+  // GET /api/admin/session
+  if (req.method === 'GET' && routePath === '/admin/session') {
+    return jsonResponse({ authenticated: isAdmin }, 200, req);
+  }
+
+  // GET /api/bridge/script (Admin only)
   if (req.method === 'GET' && routePath === '/bridge/script') {
+    if (!isAdmin) return jsonResponse({ error: 'Admin authentication required.' }, 401, req);
     return new Response(generateBridgeScript(), {
       status: 200,
       headers: {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Content-Disposition': 'attachment; filename="damaria-docs-bridge.mjs"',
-        ...corsHeaders(),
+        ...corsHeaders(req),
       },
     });
   }
@@ -579,46 +680,51 @@ export default async function handler(req: Request): Promise<Response> {
 
   // GET /api/bootstrap
   if (req.method === 'GET' && routePath === '/bootstrap') {
-    let updatedLegacy = false;
-    for (const sub of store.submissions) {
-      if (sub.fileType !== 'word' || !sub.fileUrl || !isPlaceholderWordHtml(sub.renderedHtml)) {
-        continue;
-      }
-      const stored = await readUploadedFile(path.basename(sub.fileUrl));
-      if (!stored) continue;
-      try {
-        const parsed = await parseWordBuffer(stored.buffer, sub.fileName || sub.title);
-        if (parsed.html && !isPlaceholderWordHtml(parsed.html)) {
-          sub.renderedHtml = parsed.html;
-          sub.pageCount = Math.max(1, Math.min(300, parsed.pageCount || sub.pageCount || 1));
-          updatedLegacy = true;
+    if (isAdmin) {
+      let updatedLegacy = false;
+      for (const sub of store.submissions) {
+        if (sub.fileType !== 'word' || !sub.fileUrl || !isPlaceholderWordHtml(sub.renderedHtml)) {
+          continue;
         }
-      } catch {
-        // ignore unreadable legacy file
+        const stored = await readUploadedFile(path.basename(sub.fileUrl));
+        if (!stored) continue;
+        try {
+          const parsed = await parseWordBuffer(stored.buffer, sub.fileName || sub.title);
+          if (parsed.html && !isPlaceholderWordHtml(parsed.html)) {
+            sub.renderedHtml = parsed.html;
+            sub.pageCount = Math.max(1, Math.min(300, parsed.pageCount || sub.pageCount || 1));
+            updatedLegacy = true;
+          }
+        } catch {
+          // ignore unreadable legacy file
+        }
       }
+      if (updatedLegacy) await saveStore(store);
     }
-    if (updatedLegacy) await saveStore(store);
 
-    return jsonResponse({
+    const payload: BootstrapPayload = {
       ...store,
       publicDomain: 'https://damariadocs.com',
       liveAppUrl: process.env.URL || process.env.APP_URL || url.origin,
-    });
+    };
+
+    return jsonResponse(isAdmin ? payload : sanitizeBootstrapForPublic(payload), 200, req);
   }
 
-  // GET /api/uploads/:fileKey
+  // GET /api/uploads/:fileKey (Admin only)
   const uploadMatch = routePath.match(/^\/uploads\/([^/]+)$/);
   if (req.method === 'GET' && uploadMatch) {
-    const fileKey = decodeURIComponent(uploadMatch[1]);
+    if (!isAdmin) return jsonResponse({ error: 'Admin authentication required.' }, 401, req);
+    const fileKey = path.basename(decodeURIComponent(uploadMatch[1]));
     const file = await readUploadedFile(fileKey);
-    if (!file) return jsonResponse({ error: 'File not found.' }, 404);
+    if (!file) return jsonResponse({ error: 'File not found.' }, 404, req);
     const bytes = new Uint8Array(file.buffer);
     return new Response(bytes.buffer, {
       status: 200,
       headers: {
         'Content-Type': file.mimeType || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=3600',
-        ...corsHeaders(),
+        'Cache-Control': 'private, no-store',
+        ...corsHeaders(req),
       },
     });
   }
@@ -735,15 +841,20 @@ export default async function handler(req: Request): Promise<Response> {
     }
   }
 
+  // All remaining admin actions require valid Admin Bearer token
+  if (!isAdmin) {
+    return jsonResponse({ error: 'Admin authentication required.' }, 401, req);
+  }
+
   // GET /api/submissions/:id/download
   const downloadMatch = routePath.match(/^\/submissions\/([^/]+)\/download$/);
   if (req.method === 'GET' && downloadMatch) {
     const id = decodeURIComponent(downloadMatch[1]);
     const job = store.submissions.find((s) => s.id === id);
-    if (!job || !job.fileUrl) return jsonResponse({ error: 'File not found.' }, 404);
+    if (!job || !job.fileUrl) return jsonResponse({ error: 'File not found.' }, 404, req);
     const fileKey = path.basename(job.fileUrl);
     const file = await readUploadedFile(fileKey);
-    if (!file) return jsonResponse({ error: 'File missing.' }, 404);
+    if (!file) return jsonResponse({ error: 'File missing.' }, 404, req);
     const bytes = new Uint8Array(file.buffer);
     const safeDownloadName = (job.fileName || fileKey).replace(/"/g, '');
     return new Response(bytes.buffer, {
@@ -751,7 +862,7 @@ export default async function handler(req: Request): Promise<Response> {
       headers: {
         'Content-Type': job.fileMime || file.mimeType || 'application/octet-stream',
         'Content-Disposition': `attachment; filename="${safeDownloadName}"`,
-        ...corsHeaders(),
+        ...corsHeaders(req),
       },
     });
   }
@@ -761,7 +872,7 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'POST' && printMatch) {
     const id = decodeURIComponent(printMatch[1]);
     const job = store.submissions.find((s) => s.id === id);
-    if (!job) return jsonResponse({ error: 'Document not found.' }, 404);
+    if (!job) return jsonResponse({ error: 'Document not found.' }, 404, req);
 
     const body = (await req.json()) as {
       printerId?: string;
@@ -1370,12 +1481,12 @@ export default async function handler(req: Request): Promise<Response> {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': 'attachment; filename="print-history.csv"',
-        ...corsHeaders(),
+        ...corsHeaders(req),
       },
     });
   }
 
-  return jsonResponse({ error: `Not found: ${req.method} ${routePath}` }, 404);
+  return jsonResponse({ error: `Not found: ${req.method} ${routePath}` }, 404, req);
 }
 
 export const config = {
